@@ -34,6 +34,32 @@ impl Validate for () {
     }
 }
 
+#[async_trait::async_trait]
+pub trait AsyncValidate: Send + Sync {
+    async fn validate_async(&self, _state: &AppState) -> Result<(), Vec<String>> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl AsyncValidate for () {
+    async fn validate_async(&self, _state: &AppState) -> Result<(), Vec<String>> {
+        Ok(())
+    }
+}
+
+#[macro_export]
+macro_rules! impl_async_validate {
+    ($ty:ty, $sync_fn:ident) => {
+        #[async_trait::async_trait]
+        impl $crate::AsyncValidate for $ty {
+            async fn validate_async(&self, _state: &$crate::AppState) -> Result<(), Vec<String>> {
+                $sync_fn(self)
+            }
+        }
+    };
+}
+
 /// Trait for schema patches from validation attributes
 #[doc(hidden)]
 pub trait HasSchemaPatches {
