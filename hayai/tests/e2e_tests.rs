@@ -618,3 +618,71 @@ async fn test_put_openapi_spec() {
     let body: Value = resp.json().await.unwrap();
     assert!(body["paths"]["/api/e2e-put-item/{id}"]["put"].is_object(), "PUT should appear in OpenAPI spec");
 }
+
+// --- State<T> tests ---
+
+struct Config {
+    app_name: String,
+}
+
+#[get("/state-info")]
+async fn get_state_info(cfg: State<Config>) -> User {
+    User { id: 0, name: cfg.app_name.clone(), email: "config@test.com".into() }
+}
+
+#[get("/state-user/{id}")]
+async fn get_state_user(id: i64, db: Dep<Database>, cfg: State<Config>) -> Result<User, ApiError> {
+    let mut user = db.get_user(id).await
+        .ok_or_else(|| ApiError::not_found(format!("User {} not found", id)))?;
+    user.name = format!("{} ({})", user.name, cfg.app_name);
+    Ok(user)
+}
+
+async fn spawn_state_app() -> String {
+    let app = HayaiApp::new()
+        .dep(Database)
+        .dep(Config { app_name: "TestApp".into() })
+        .into_router();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    format!("http://{}", addr)
+}
+
+#[tokio::test]
+async fn test_state_extractor_works() {
+    let base = spawn_state_app().await;
+    let resp = reqwest::get(format!("{base}/state-info")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["name"], "TestApp");
+}
+
+#[tokio::test]
+async fn test_state_and_dep_together() {
+    let base = spawn_state_app().await;
+    let resp = reqwest::get(format!("{base}/state-user/42")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["name"], "Alice (TestApp)");
+}
+
+#[tokio::test]
+async fn test_state_missing_returns_500() {
+    // App without Config registered
+    let app = HayaiApp::new()
+        .dep(Database)
+        .include(
+            HayaiRouter::new("")
+                .route(__HAYAI_ROUTE_GET_STATE_INFO)
+        )
+        .into_router();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    let base = format!("http://{}", addr);
+    let resp = reqwest::get(format!("{base}/state-info")).await.unwrap();
+    assert_eq!(resp.status(), 500);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("State not registered"));
+}

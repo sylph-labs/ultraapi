@@ -20,6 +20,15 @@ fn is_dep_type(ty: &Type) -> bool {
     false
 }
 
+fn is_state_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "State";
+        }
+    }
+    false
+}
+
 fn is_query_type(ty: &Type) -> bool {
     if let Type::Path(tp) = ty {
         if let Some(seg) = tp.path.segments.last() {
@@ -169,6 +178,17 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         if let Some(inner) = extract_inner_type(seg) {
                             dep_extractions.push(quote! {
                                 let #pat: hayai::Dep<#inner> = hayai::Dep::from_app_state(&state)?;
+                            });
+                            call_args.push(quote!(#pat));
+                        }
+                    }
+                }
+            } else if is_state_type(ty) {
+                if let Type::Path(tp) = ty.as_ref() {
+                    if let Some(seg) = tp.path.segments.last() {
+                        if let Some(inner) = extract_inner_type(seg) {
+                            dep_extractions.push(quote! {
+                                let #pat: hayai::State<#inner> = hayai::State::from_app_state(&state)?;
                             });
                             call_args.push(quote!(#pat));
                         }

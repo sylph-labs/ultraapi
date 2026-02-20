@@ -119,9 +119,9 @@ async fn get_user(id: i64, db: Dep<Database>) -> Result<User, ApiError> {
         .ok_or_else(|| ApiError::not_found(format!("User {} not found", id)))
 }
 
-/// List all users with pagination
+/// List all users with pagination (using State<T> instead of Dep<T>)
 #[get("/")]
-async fn list_users(query: Query<Pagination>, db: Dep<Database>) -> Vec<User> {
+async fn list_users(query: Query<Pagination>, db: State<Database>) -> Vec<User> {
     db.list_users(query.page, query.limit).await
 }
 

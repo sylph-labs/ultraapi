@@ -19,7 +19,7 @@ pub use regex;
 
 pub mod prelude {
     pub use crate::{get, post, put, delete, api_model};
-    pub use crate::{HayaiApp, HayaiRouter, Dep, ApiError, Validate};
+    pub use crate::{HayaiApp, HayaiRouter, Dep, State, ApiError, Validate};
     pub use crate::axum::extract::Query;
 }
 
@@ -70,6 +70,25 @@ impl<T: 'static + Send + Sync> Dep<T> {
 }
 
 impl<T: 'static + Send + Sync> std::ops::Deref for Dep<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// Axum-style state extractor — alternative to Dep<T>
+/// Both work identically; choose based on your preferred style.
+pub struct State<T: 'static + Send + Sync>(Arc<T>);
+
+impl<T: 'static + Send + Sync> State<T> {
+    pub fn from_app_state(state: &AppState) -> Result<Self, ApiError> {
+        state.get::<T>()
+            .map(State)
+            .ok_or_else(|| ApiError::internal(format!("State not registered: {}", std::any::type_name::<T>())))
+    }
+}
+
+impl<T: 'static + Send + Sync> std::ops::Deref for State<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.0
