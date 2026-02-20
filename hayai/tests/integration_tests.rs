@@ -980,3 +980,71 @@ fn test_pattern_validation_accepts_matching() {
     let m = NumericModel { quantity: 50, code: "ABC".into(), items: vec!["a".into()] };
     assert!(m.validate().is_ok());
 }
+
+// ---- Dependency Override Tests ----
+
+/// A real database pool (production dependency)
+#[derive(Clone, Debug, PartialEq)]
+struct RealDbPool {
+    connection_string: String,
+}
+
+/// A mock database for testing
+#[derive(Clone, Debug, PartialEq)]
+struct MockDbPool {
+    mock_data: Vec<String>,
+}
+
+#[test]
+fn test_override_dep_method_exists() {
+    // Test that override_dep method exists and can be called
+    let app = hayai::HayaiApp::new()
+        .override_dep(RealDbPool { connection_string: "test".into() });
+    
+    let _ = app;
+}
+
+#[test]
+fn test_has_override_method() {
+    let app = hayai::HayaiApp::new()
+        .override_dep(RealDbPool { connection_string: "test".into() });
+    
+    assert!(app.has_override::<RealDbPool>());
+    assert!(!app.has_override::<MockDbPool>());
+}
+
+#[test]
+fn test_clear_overrides_method() {
+    let app = hayai::HayaiApp::new()
+        .override_dep(RealDbPool { connection_string: "test".into() })
+        .clear_overrides();
+    
+    // The method exists and can be called
+    let _ = app;
+}
+
+#[test]
+fn test_override_multiple_deps() {
+    // Can override multiple different types
+    let app = hayai::HayaiApp::new()
+        .override_dep(RealDbPool { connection_string: "test".into() })
+        .override_dep(MockDbPool { mock_data: vec![] });
+    
+    assert!(app.has_override::<RealDbPool>());
+    assert!(app.has_override::<MockDbPool>());
+}
+
+// Integration test: mock database replacing real database
+#[test]
+fn test_integration_override_with_dep() {
+    let real_db = RealDbPool { connection_string: "postgresql://localhost/prod".into() };
+    let test_db = RealDbPool { connection_string: "mock://test".into() };
+    
+    // Build app with real DB dependency, then override with test config
+    // The override takes precedence
+    let _app = hayai::HayaiApp::new()
+        .dep(real_db)
+        .override_dep(test_db);
+    
+    // The app builds successfully with override applied
+}

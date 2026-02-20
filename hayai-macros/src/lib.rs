@@ -434,10 +434,34 @@ pub fn delete(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse the attribute to look for validate(custom = "fn_name")
+    let mut custom_validation_fn: Option<proc_macro2::TokenStream> = None;
+    
+    // Parse attribute if provided (e.g., #[api_model(validate(custom = "fn_name"))])
+    let attr_str = attr.to_string();
+    if attr_str.contains("validate") {
+        // Simple string parsing to find validate(custom = "fn_name")
+        if let Some(start) = attr_str.find("custom") {
+            let rest = &attr_str[start..];
+            if let Some(eq_pos) = rest.find('=') {
+                let after_eq = &rest[eq_pos+1..];
+                // Find the quoted string
+                if let Some(quote_start) = after_eq.find('"') {
+                    if let Some(quote_end) = after_eq[quote_start+1..].find('"') {
+                        let fn_name = &after_eq[quote_start+1..quote_start+1+quote_end];
+                        if !fn_name.is_empty() {
+                            custom_validation_fn = Some(quote!(#fn_name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
     let item_clone = item.clone();
     if let Ok(input) = syn::parse::<ItemStruct>(item) {
-        api_model_struct(input)
+        api_model_struct(input, custom_validation_fn)
     } else if let Ok(input) = syn::parse::<ItemEnum>(item_clone) {
         api_model_enum(input)
     } else {
@@ -506,7 +530,7 @@ fn api_model_enum(input: ItemEnum) -> TokenStream {
     output.into()
 }
 
-fn api_model_struct(input: ItemStruct) -> TokenStream {
+fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2::TokenStream>) -> TokenStream {
     let name = &input.ident;
     let vis = &input.vis;
     let attrs = &input.attrs;
