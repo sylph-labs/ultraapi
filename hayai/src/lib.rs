@@ -176,7 +176,9 @@ impl HayaiApp {
         self
     }
     
-    pub async fn serve(self, addr: &str) {
+    /// Build the configured Router without starting the server.
+    /// Useful for testing or custom serving setups.
+    pub fn into_router(self) -> Router {
         let spec = self.generate_openapi_spec();
         let swagger_html = self.generate_swagger_html();
         
@@ -208,7 +210,11 @@ impl HayaiApp {
             }
         }));
         
-        let app = app.with_state(state);
+        app.with_state(state)
+    }
+
+    pub async fn serve(self, addr: &str) {
+        let app = self.into_router();
         
         let listener = tokio::net::TcpListener::bind(addr).await
             .expect("Failed to bind to address");
