@@ -35,6 +35,7 @@ impl Validate for () {
 }
 
 /// Trait for schema patches from validation attributes
+#[doc(hidden)]
 pub trait HasSchemaPatches {
     fn patch_schema(props: &mut HashMap<String, openapi::PropertyPatch>);
 }
@@ -122,6 +123,7 @@ pub struct RouteInfo {
     pub method: &'static str,
     pub handler_name: &'static str,
     pub response_type_name: &'static str,
+    pub is_result_return: bool,
     pub is_vec_response: bool,
     pub vec_inner_type_name: &'static str,
     pub parameters: &'static [openapi::Parameter],
@@ -535,6 +537,12 @@ impl HayaiApp {
                     description: "Bad Request".to_string(),
                     schema_ref: Some(serde_json::json!({ "$ref": "#/components/schemas/ApiError" })),
                 });
+                if route.is_result_return {
+                    map.insert("404".to_string(), openapi::ResponseDef {
+                        description: "Not Found".to_string(),
+                        schema_ref: Some(serde_json::json!({ "$ref": "#/components/schemas/ApiError" })),
+                    });
+                }
                 if route.has_body {
                     map.insert("422".to_string(), openapi::ResponseDef {
                         description: "Validation Failed".to_string(),

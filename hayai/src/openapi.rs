@@ -403,6 +403,7 @@ impl Serialize for Property {
     }
 }
 
+#[derive(Default)]
 pub struct PropertyPatch {
     pub min_length: Option<usize>,
     pub max_length: Option<usize>,

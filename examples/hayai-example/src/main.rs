@@ -114,8 +114,9 @@ impl Database {
 
 /// Get a user by ID
 #[get("/{id}")]
-async fn get_user(id: i64, db: Dep<Database>) -> User {
-    db.get_user(id).await.unwrap()
+async fn get_user(id: i64, db: Dep<Database>) -> Result<User, ApiError> {
+    db.get_user(id).await
+        .ok_or_else(|| ApiError::not_found(format!("User {} not found", id)))
 }
 
 /// List all users with pagination

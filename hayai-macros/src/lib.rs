@@ -38,6 +38,22 @@ fn get_type_name(ty: &Type) -> String {
     "Unknown".to_string()
 }
 
+/// Check if the type is Result<T, E> and return the Ok type
+fn get_result_ok_type(ty: &Type) -> Option<&Type> {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            if seg.ident == "Result" {
+                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                    if let Some(syn::GenericArgument::Type(ok_type)) = args.args.first() {
+                        return Some(ok_type);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Check if the type is Vec<T> and return the inner type name
 fn get_vec_inner_type_name(ty: &Type) -> Option<String> {
     if let Type::Path(tp) = ty {
@@ -191,11 +207,16 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         syn::ReturnType::Type(_, ty) => Some(ty.as_ref()),
         _ => None,
     };
-    let return_type_name = return_type.map(|t| get_type_name(t)).unwrap_or_else(|| "()".to_string());
 
-    // Detect Vec<T> return type for array schema
-    let is_vec_response = return_type.map(|t| get_vec_inner_type_name(t).is_some()).unwrap_or(false);
-    let vec_inner_type_name = return_type.and_then(|t| get_vec_inner_type_name(t)).unwrap_or_default();
+    // Detect Result<T, ApiError> return type
+    let is_result_return = return_type.map(|t| get_result_ok_type(t).is_some()).unwrap_or(false);
+    let effective_return_type = return_type.and_then(|t| get_result_ok_type(t)).or(return_type);
+
+    let return_type_name = effective_return_type.map(|t| get_type_name(t)).unwrap_or_else(|| "()".to_string());
+
+    // Detect Vec<T> return type for array schema (check effective type, i.e. inside Result if applicable)
+    let is_vec_response = effective_return_type.map(|t| get_vec_inner_type_name(t).is_some()).unwrap_or(false);
+    let vec_inner_type_name = effective_return_type.and_then(|t| get_vec_inner_type_name(t)).unwrap_or_default();
 
     let path_extraction = if !path_param_types.is_empty() {
         let names: Vec<_> = path_param_types.iter().map(|(n,_)| *n).collect();
@@ -242,9 +263,26 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     // Generate response based on status code
     let status_lit = proc_macro2::Literal::u16_unsuffixed(success_status);
     let response_expr = if success_status == 204 {
+        if is_result_return {
+            quote! {
+                let _ = #fn_name(#(#call_args),*).await?;
+                Ok((hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
+            }
+        } else {
+            quote! {
+                let _ = #fn_name(#(#call_args),*).await;
+                Ok((hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
+            }
+        }
+    } else if is_result_return {
         quote! {
-            let _ = #fn_name(#(#call_args),*).await;
-            Ok((hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
+            let result = #fn_name(#(#call_args),*).await?;
+            let value = hayai::serde_json::to_value(&result)
+                .map_err(|e| hayai::ApiError::internal(format!("Response serialization failed: {}", e)))?;
+            Ok((
+                hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
+                hayai::axum::Json(value),
+            ).into_response())
         }
     } else {
         quote! {
@@ -327,6 +365,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             method: #method_upper,
             handler_name: #fn_name_str,
             response_type_name: #return_type_name,
+            is_result_return: #is_result_return,
             is_vec_response: #is_vec_response,
             vec_inner_type_name: #vec_inner_type_name,
             parameters: &[#(#path_param_schemas),*],
@@ -382,7 +421,9 @@ pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
     } else if let Ok(input) = syn::parse::<ItemEnum>(item_clone) {
         api_model_enum(input)
     } else {
-        panic!("api_model supports structs and enums only")
+        syn::Error::new(proc_macro2::Span::call_site(), "api_model only supports structs and enums")
+            .to_compile_error()
+            .into()
     }
 }
 
@@ -454,7 +495,9 @@ fn api_model_struct(input: ItemStruct) -> TokenStream {
 
     let fields = match &input.fields {
         syn::Fields::Named(fields) => &fields.named,
-        _ => panic!("ApiModel only supports structs with named fields"),
+        _ => return syn::Error::new_spanned(&input, "api_model only supports structs with named fields")
+            .to_compile_error()
+            .into(),
     };
 
     let mut validation_checks = Vec::new();
@@ -663,11 +706,7 @@ fn api_model_struct(input: ItemStruct) -> TokenStream {
                         schema.description = #desc_expr;
                         let mut patches = std::collections::HashMap::new();
                         for (name, _) in &schema.properties {
-                            patches.insert(name.clone(), hayai::openapi::PropertyPatch {
-                                min_length: None, max_length: None, format: None,
-                                minimum: None, maximum: None, pattern: None, min_items: None,
-                                description: None, example: None,
-                            });
+                            patches.insert(name.clone(), hayai::openapi::PropertyPatch::default());
                         }
                         <#name as hayai::HasSchemaPatches>::patch_schema(&mut patches);
                         for (name, patch) in patches {

@@ -46,6 +46,7 @@ struct Pagination {
 struct Database;
 impl Database {
     async fn get_user(&self, id: i64) -> Option<User> {
+        if id == 9999 { return None; }
         Some(User { id, name: "Alice".into(), email: "alice@example.com".into() })
     }
     async fn create_user(&self, input: &CreateUser) -> User {
@@ -59,8 +60,9 @@ impl Database {
 /// Get a user by ID
 #[get("/users/{id}")]
 #[tag("users")]
-async fn get_user(id: i64, db: Dep<Database>) -> User {
-    db.get_user(id).await.unwrap()
+async fn get_user(id: i64, db: Dep<Database>) -> Result<User, ApiError> {
+    db.get_user(id).await
+        .ok_or_else(|| ApiError::not_found(format!("User {} not found", id)))
 }
 
 /// Create a new user
@@ -483,4 +485,136 @@ async fn test_router_e2e_nested_routers() {
 
     let resp = reqwest::get(format!("{base}/api/v1/items/e2e-rt-list")).await.unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+// ===== Result<T, ApiError> E2E tests =====
+
+#[tokio::test]
+async fn test_result_handler_ok_returns_200() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/users/42")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 42);
+    assert_eq!(body["name"], "Alice");
+}
+
+#[tokio::test]
+async fn test_result_handler_not_found_returns_404() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/users/9999")).await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("not found"));
+}
+
+#[tokio::test]
+async fn test_result_handler_bad_request_returns_400() {
+    // Test a Result-returning handler that returns bad_request error
+    let base = spawn_result_app().await;
+    let resp = reqwest::get(format!("{base}/result-test/bad")).await.unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("bad input"));
+}
+
+#[tokio::test]
+async fn test_openapi_result_handler_has_404_response() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+
+    // GET /users/{id} returns Result, should have 404 response
+    let get_user = &body["paths"]["/users/{id}"]["get"];
+    assert!(get_user["responses"]["404"].is_object(), "Result handler should have 404 response");
+    assert_eq!(get_user["responses"]["404"]["description"], "Not Found");
+}
+
+// ===== PUT E2E tests =====
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct UpdateItem {
+    #[validate(min_length = 1)]
+    name: String,
+}
+
+#[put("/e2e-put-item/{id}")]
+async fn e2e_put_item(id: i64, body: UpdateItem) -> Item {
+    Item { id, name: body.name }
+}
+
+#[get("/result-test/{mode}")]
+async fn e2e_result_test(mode: String) -> Result<Item, ApiError> {
+    match mode.as_str() {
+        "bad" => Err(ApiError::bad_request("bad input".to_string())),
+        _ => Ok(Item { id: 1, name: "ok".into() }),
+    }
+}
+
+async fn spawn_result_app() -> String {
+    let app = HayaiApp::new()
+        .title("Result Test API")
+        .version("0.1.0")
+        .include(
+            hayai::HayaiRouter::new("")
+                .route(__HAYAI_ROUTE_E2E_RESULT_TEST)
+        )
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{}", addr)
+}
+
+async fn spawn_put_app() -> String {
+    let app = HayaiApp::new()
+        .title("PUT Test API")
+        .version("0.1.0")
+        .include(
+            hayai::HayaiRouter::new("/api")
+                .route(__HAYAI_ROUTE_E2E_PUT_ITEM)
+        )
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{}", addr)
+}
+
+#[tokio::test]
+async fn test_put_returns_200() {
+    let base = spawn_put_app().await;
+    let client = reqwest::Client::new();
+    let resp = client.put(format!("{base}/api/e2e-put-item/5"))
+        .json(&serde_json::json!({"name": "Updated"}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 5);
+    assert_eq!(body["name"], "Updated");
+}
+
+#[tokio::test]
+async fn test_put_validation_error_returns_422() {
+    let base = spawn_put_app().await;
+    let client = reqwest::Client::new();
+    let resp = client.put(format!("{base}/api/e2e-put-item/5"))
+        .json(&serde_json::json!({"name": ""}))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 422);
+}
+
+#[tokio::test]
+async fn test_put_openapi_spec() {
+    let base = spawn_put_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+    assert!(body["paths"]["/api/e2e-put-item/{id}"]["put"].is_object(), "PUT should appear in OpenAPI spec");
 }
