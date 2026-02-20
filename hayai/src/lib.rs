@@ -106,6 +106,10 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        Self { status: StatusCode::UNAUTHORIZED, error: msg.into(), details: vec![] }
+    }
+
     pub fn bad_request(msg: String) -> Self {
         Self { status: StatusCode::BAD_REQUEST, error: msg, details: vec![] }
     }
@@ -325,6 +329,8 @@ pub enum SwaggerMode {
 /// The main application struct
 pub struct HayaiApp {
     deps: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    /// Dependency overrides for testing - these take precedence over regular deps
+    dep_overrides: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     title: String,
     version: String,
     description: Option<String>,
@@ -340,6 +346,7 @@ impl HayaiApp {
     pub fn new() -> Self {
         Self {
             deps: HashMap::new(),
+            dep_overrides: HashMap::new(),
             title: env!("CARGO_PKG_NAME").to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             description: None,
@@ -396,6 +403,53 @@ impl HayaiApp {
 
     pub fn dep<T: 'static + Send + Sync>(mut self, dep: T) -> Self {
         self.deps.insert(TypeId::of::<T>(), Arc::new(dep));
+        self
+    }
+
+    /// Override a dependency for testing.
+    ///
+    /// This allows replacing registered dependencies with mock values during testing.
+    /// Overrides take precedence over regular dependencies registered via [`dep()`](HayaiApp::dep).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use hayai::{HayaiApp, Dep};
+    ///
+    /// #[derive(Clone)]
+    /// struct DatabasePool { /* ... */ }
+    ///
+    /// #[derive(Clone)]
+    /// struct MockDatabase { pub data: Vec<String> }
+    ///
+    /// #[get("/items")]
+    /// async fn get_items(dep(pool): Dep<DatabasePool>) -> Vec<String> {
+    ///     vec![]
+    /// }
+    ///
+    /// #[tokio::test]
+    /// async fn test_with_mock_db() {
+    ///     let mock_db = MockDatabase { data: vec!["test".into()] };
+    ///
+    ///     let app = HayaiApp::new()
+    ///         .dep(DatabasePool { /* real config */ })
+    ///         .override_dep(mock_db)
+    ///         .route(get_items);
+    /// }
+    /// ```
+    pub fn override_dep<T: 'static + Send + Sync>(mut self, dep: T) -> Self {
+        self.dep_overrides.insert(TypeId::of::<T>(), Arc::new(dep));
+        self
+    }
+
+    /// Check if a dependency override exists for the given type.
+    pub fn has_override<T: 'static + Send + Sync>(&self) -> bool {
+        self.dep_overrides.contains_key(&TypeId::of::<T>())
+    }
+
+    /// Clear all dependency overrides.
+    pub fn clear_overrides(mut self) -> Self {
+        self.dep_overrides.clear();
         self
     }
 

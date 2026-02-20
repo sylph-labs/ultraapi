@@ -686,3 +686,96 @@ async fn test_state_missing_returns_500() {
     let body: Value = resp.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("State not registered"));
 }
+
+// ===== Cross-field Validation Tests =====
+
+/// Custom validation function: end_date must be after start_date
+fn validate_date_range(item: &DateRangeItem) -> Result<(), Vec<String>> {
+    if item.end_date <= item.start_date {
+        Err(vec!["end_date must be after start_date".to_string()])
+    } else {
+        Ok(())
+    }
+}
+
+/// Use #[api_model(validate(custom = "fn_name"))] to enable cross-field validation
+#[api_model(validate(custom = "validate_date_range"))]
+#[derive(Debug, Clone)]
+struct DateRangeItem {
+    name: String,
+    start_date: String,
+    end_date: String,
+}
+
+#[post("/date-range")]
+#[tag("validation")]
+async fn create_date_range(body: DateRangeItem) -> DateRangeItem {
+    body
+}
+
+async fn spawn_date_range_app() -> String {
+    let app = HayaiApp::new()
+        .title("Date Range Test API")
+        .version("0.1.0")
+        .include(
+            HayaiRouter::new("")
+                .route(__HAYAI_ROUTE_CREATE_DATE_RANGE)
+        )
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    format!("http://{}", addr)
+}
+
+#[tokio::test]
+async fn test_cross_field_validation_valid_dates_returns_201() {
+    let base = spawn_date_range_app().await;
+    let client = reqwest::Client::new();
+    let resp = client.post(format!("{base}/date-range"))
+        .json(&serde_json::json!({
+            "name": "Summer Vacation",
+            "start_date": "2024-06-01",
+            "end_date": "2024-08-31"
+        }))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["name"], "Summer Vacation");
+}
+
+#[tokio::test]
+async fn test_cross_field_validation_invalid_dates_returns_422() {
+    let base = spawn_date_range_app().await;
+    let client = reqwest::Client::new();
+    let resp = client.post(format!("{base}/date-range"))
+        .json(&serde_json::json!({
+            "name": "Invalid Range",
+            "start_date": "2024-08-01",
+            "end_date": "2024-06-01"
+        }))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 422);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Validation failed");
+    let details = body["details"].as_array().unwrap();
+    assert!(details.iter().any(|d| d.as_str().unwrap().contains("end_date must be after start_date")));
+}
+
+#[tokio::test]
+async fn test_cross_field_validation_same_date_returns_422() {
+    let base = spawn_date_range_app().await;
+    let client = reqwest::Client::new();
+    let resp = client.post(format!("{base}/date-range"))
+        .json(&serde_json::json!({
+            "name": "Same Day",
+            "start_date": "2024-06-01",
+            "end_date": "2024-06-01"
+        }))
+        .send().await.unwrap();
+    assert_eq!(resp.status(), 422);
+    let body: Value = resp.json().await.unwrap();
+    let details = body["details"].as_array().unwrap();
+    assert!(details.iter().any(|d| d.as_str().unwrap().contains("end_date must be after start_date")));
+}
