@@ -1,13 +1,30 @@
 use hayai::prelude::*;
+use hayai::serde::Deserialize;
+use hayai::schemars::JsonSchema;
 
+/// A user in the system
 #[api_model]
 #[derive(Debug, Clone)]
 struct User {
     id: i64,
+    /// Display name
     name: String,
+    /// Email address
     email: String,
+    /// Current account status
+    status: Status,
 }
 
+/// Account status
+#[api_model]
+#[derive(Debug, Clone)]
+enum Status {
+    Active,
+    Inactive,
+    Pending,
+}
+
+/// Request body for creating a user
 #[api_model]
 #[derive(Debug, Clone)]
 struct CreateUser {
@@ -15,6 +32,22 @@ struct CreateUser {
     name: String,
     #[validate(email)]
     email: String,
+}
+
+/// An item with numeric constraints
+#[api_model]
+#[derive(Debug, Clone)]
+struct CreateItem {
+    #[validate(min_length = 1)]
+    name: String,
+    /// Quantity to order
+    #[validate(minimum = 1, maximum = 1000)]
+    quantity: i64,
+    /// Product code (3 uppercase letters)
+    #[validate(pattern = "^[A-Z]{3}$")]
+    code: String,
+    #[validate(min_items = 1)]
+    tags: Vec<String>,
 }
 
 #[api_model]
@@ -33,6 +66,13 @@ struct UserProfile {
     nickname: Option<String>,
 }
 
+/// Query parameters for listing users
+#[derive(Deserialize, JsonSchema)]
+struct Pagination {
+    page: Option<i64>,
+    limit: Option<i64>,
+}
+
 struct Database;
 impl Database {
     async fn get_user(&self, id: i64) -> Option<User> {
@@ -40,7 +80,17 @@ impl Database {
             id,
             name: "Alice".into(),
             email: "alice@example.com".into(),
+            status: Status::Active,
         })
+    }
+
+    async fn list_users(&self, _page: Option<i64>, _limit: Option<i64>) -> Vec<User> {
+        vec![User {
+            id: 1,
+            name: "Alice".into(),
+            email: "alice@example.com".into(),
+            status: Status::Active,
+        }]
     }
 
     async fn create_user(&self, input: &CreateUser) -> User {
@@ -48,18 +98,39 @@ impl Database {
             id: 1,
             name: input.name.clone(),
             email: input.email.clone(),
+            status: Status::Pending,
         }
     }
+
+    async fn delete_user(&self, _id: i64) {}
 }
 
+/// Get a user by ID
 #[get("/users/{id}")]
+#[tag("users")]
 async fn get_user(id: i64, db: Dep<Database>) -> User {
     db.get_user(id).await.unwrap()
 }
 
+/// List all users with pagination
+#[get("/users")]
+#[tag("users")]
+async fn list_users(query: Query<Pagination>, db: Dep<Database>) -> Vec<User> {
+    db.list_users(query.page, query.limit).await
+}
+
+/// Create a new user
 #[post("/users")]
+#[tag("users")]
 async fn create_user(body: CreateUser, db: Dep<Database>) -> User {
     db.create_user(&body).await
+}
+
+/// Delete a user by ID
+#[delete("/users/{id}")]
+#[tag("users")]
+async fn delete_user(id: i64, db: Dep<Database>) -> () {
+    db.delete_user(id).await
 }
 
 #[tokio::main]
@@ -68,6 +139,6 @@ async fn main() {
         .title("My API")
         .version("1.0.0")
         .dep(Database)
-        .serve("0.0.0.0:3000")
+        .serve("0.0.0.0:3001")
         .await;
 }

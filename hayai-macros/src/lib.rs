@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
-use syn::{parse_macro_input, ItemFn, ItemStruct, FnArg, PatType, Type, PathSegment, LitStr};
+use syn::{parse_macro_input, ItemFn, ItemStruct, ItemEnum, FnArg, PatType, Type, PathSegment, LitStr, LitInt};
 
 fn extract_inner_type(seg: &PathSegment) -> Option<&Type> {
     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
@@ -20,6 +20,15 @@ fn is_dep_type(ty: &Type) -> bool {
     false
 }
 
+fn is_query_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "Query";
+        }
+    }
+    false
+}
+
 fn get_type_name(ty: &Type) -> String {
     if let Type::Path(tp) = ty {
         if let Some(seg) = tp.path.segments.last() {
@@ -34,14 +43,69 @@ fn is_primitive_type(ty: &Type) -> bool {
     matches!(name.as_str(), "i8"|"i16"|"i32"|"i64"|"i128"|"u8"|"u16"|"u32"|"u64"|"u128"|"f32"|"f64"|"String"|"bool")
 }
 
+/// Extract doc comment string from attributes
+fn extract_doc_comment(attrs: &[syn::Attribute]) -> String {
+    let mut lines = Vec::new();
+    for attr in attrs {
+        if attr.path().is_ident("doc") {
+            if let syn::Meta::NameValue(nv) = &attr.meta {
+                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                    lines.push(s.value().trim().to_string());
+                }
+            }
+        }
+    }
+    lines.join("\n").trim().to_string()
+}
+
 fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> TokenStream {
     let path = parse_macro_input!(attr as LitStr).value();
     let input_fn = parse_macro_input!(item as ItemFn);
     let fn_name = &input_fn.sig.ident;
     let fn_vis = &input_fn.vis;
-    let fn_attrs = &input_fn.attrs;
     let fn_sig = &input_fn.sig;
     let fn_block = &input_fn.block;
+
+    // Parse custom attributes: #[status(N)], #[tag("x")], doc comments
+    let mut status_code: Option<u16> = None;
+    let mut tags: Vec<String> = Vec::new();
+    let description = extract_doc_comment(&input_fn.attrs);
+
+    let mut clean_attrs: Vec<&syn::Attribute> = Vec::new();
+    for attr in &input_fn.attrs {
+        if attr.path().is_ident("status") {
+            let _ = attr.parse_nested_meta(|meta| {
+                // #[status(201)] - the 201 is the first token
+                Err(meta.error(""))
+            });
+            // Parse as #[status(N)]
+            if let syn::Meta::List(list) = &attr.meta {
+                let tokens = list.tokens.clone();
+                if let Ok(lit) = syn::parse2::<LitInt>(tokens) {
+                    status_code = Some(lit.base10_parse().unwrap());
+                }
+            }
+        } else if attr.path().is_ident("tag") {
+            if let syn::Meta::List(list) = &attr.meta {
+                let tokens = list.tokens.clone();
+                if let Ok(lit) = syn::parse2::<LitStr>(tokens) {
+                    tags.push(lit.value());
+                }
+            }
+        } else if !attr.path().is_ident("doc") {
+            clean_attrs.push(attr);
+        } else {
+            clean_attrs.push(attr);
+        }
+    }
+
+    // Default status codes
+    let default_status: u16 = match method {
+        "post" => 201,
+        "delete" => 204,
+        _ => 200,
+    };
+    let success_status = status_code.unwrap_or(default_status);
 
     let path_params: Vec<String> = path.split('/')
         .filter(|s| s.starts_with('{') && s.ends_with('}'))
@@ -58,6 +122,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let mut has_body = false;
     let mut body_type: Option<&Type> = None;
     let mut path_param_types: Vec<(&syn::Ident, &Type)> = Vec::new();
+    let mut query_type: Option<&Type> = None;
+    let mut query_extraction = quote!{};
 
     for arg in &input_fn.sig.inputs {
         if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
@@ -69,6 +135,20 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                             dep_extractions.push(quote! {
                                 let #pat: hayai::Dep<#inner> = hayai::Dep::from_app_state(&state);
                             });
+                            call_args.push(quote!(#pat));
+                        }
+                    }
+                }
+            } else if is_query_type(ty) {
+                if let Type::Path(tp) = ty.as_ref() {
+                    if let Some(seg) = tp.path.segments.last() {
+                        if let Some(inner) = extract_inner_type(seg) {
+                            query_type = Some(inner);
+                            query_extraction = quote! {
+                                let #pat: hayai::axum::extract::Query<#inner> =
+                                    hayai::axum::extract::Query::from_request_parts(&mut parts, &state).await
+                                    .map_err(|e| hayai::ApiError::bad_request(format!("Invalid query parameters: {}", e)))?;
+                            };
                             call_args.push(quote!(#pat));
                         }
                     }
@@ -119,7 +199,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         let bty = body_type.unwrap();
         let bpat = input_fn.sig.inputs.iter().find_map(|arg| {
             if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-                if !is_dep_type(ty) && !is_primitive_type(ty) {
+                if !is_dep_type(ty) && !is_primitive_type(ty) && !is_query_type(ty) {
                     let n = quote!(#pat).to_string();
                     if !path_params.contains(&n) { return Some(pat.clone()); }
                 }
@@ -136,6 +216,25 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         quote! { let _ = req; }
     };
 
+    // Generate response based on status code
+    let status_lit = proc_macro2::Literal::u16_unsuffixed(success_status);
+    let response_expr = if success_status == 204 {
+        quote! {
+            let _ = #fn_name(#(#call_args),*).await;
+            Ok((hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
+        }
+    } else {
+        quote! {
+            let result = #fn_name(#(#call_args),*).await;
+            let value = hayai::serde_json::to_value(&result)
+                .map_err(|e| hayai::ApiError::internal(format!("Response serialization failed: {}", e)))?;
+            Ok((
+                hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
+                hayai::axum::Json(value),
+            ).into_response())
+        }
+    };
+
     let path_param_schemas: Vec<_> = path_params.iter().map(|p| {
         quote! {
             hayai::openapi::Parameter {
@@ -150,9 +249,17 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let body_type_name = body_type.map(|t| get_type_name(t)).unwrap_or_default();
     let fn_name_str = fn_name.to_string();
 
+    let query_params_fn_expr = if let Some(qt) = query_type {
+        quote! { Some(|| {
+            let root = hayai::schemars::schema_for!(#qt);
+            hayai::openapi::query_params_from_schema(&root)
+        }) }
+    } else {
+        quote! { None }
+    };
+
     let output = quote! {
-        // Original fn preserved with its name, visibility, and attributes
-        #(#fn_attrs)*
+        #(#clean_attrs)*
         #fn_vis #fn_sig #fn_block
 
         #[doc(hidden)]
@@ -160,20 +267,18 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             hayai::axum::extract::State(state): hayai::axum::extract::State<hayai::AppState>,
             mut parts: hayai::axum::http::request::Parts,
             req: hayai::axum::http::Request<hayai::axum::body::Body>,
-        ) -> Result<hayai::axum::Json<hayai::serde_json::Value>, hayai::ApiError> {
+        ) -> Result<hayai::axum::response::Response, hayai::ApiError> {
             use hayai::axum::extract::FromRequest;
             use hayai::axum::extract::FromRequestParts;
+            use hayai::axum::response::IntoResponse;
             use hayai::Validate;
 
-            // Parts extracted BEFORE body consumption (Issue #4)
             #path_extraction
+            #query_extraction
             #(#dep_extractions)*
             #body_extraction
 
-            let result = #fn_name(#(#call_args),*).await;
-            let value = hayai::serde_json::to_value(&result)
-                .map_err(|e| hayai::ApiError::internal(format!("Response serialization failed: {}", e)))?;
-            Ok(hayai::axum::Json(value))
+            #response_expr
         }
 
         hayai::inventory::submit! {
@@ -186,6 +291,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 parameters: &[#(#path_param_schemas),*],
                 has_body: #has_body,
                 body_type_name: #body_type_name,
+                success_status: #status_lit,
+                description: #description,
+                tags: &[#(#tags),*],
+                query_params_fn: #query_params_fn_expr,
                 register_fn: |app: hayai::axum::Router<hayai::AppState>| {
                     app.route(#axum_path, hayai::axum::routing::#method_ident(#wrapper_name))
                 },
@@ -216,16 +325,76 @@ pub fn delete(attr: TokenStream, item: TokenStream) -> TokenStream {
     route_macro_impl("delete", attr, item)
 }
 
-/// Attribute macro that auto-derives Serialize, Deserialize, JsonSchema and generates
-/// Validate + HasSchemaPatches + SchemaInfo registration.
-/// Users only need `#[derive(ApiModel)]` (and optionally Debug, Clone).
 #[proc_macro_attribute]
 pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemStruct);
+    let item_clone = item.clone();
+    if let Ok(input) = syn::parse::<ItemStruct>(item) {
+        api_model_struct(input)
+    } else if let Ok(input) = syn::parse::<ItemEnum>(item_clone) {
+        api_model_enum(input)
+    } else {
+        panic!("api_model supports structs and enums only")
+    }
+}
+
+fn api_model_enum(input: ItemEnum) -> TokenStream {
+    let name = &input.ident;
+    let vis = &input.vis;
+    let attrs = &input.attrs;
+    let variants = &input.variants;
+    let description = extract_doc_comment(attrs);
+
+    let variant_names: Vec<String> = variants.iter()
+        .map(|v| v.ident.to_string())
+        .collect();
+
+    let name_str = name.to_string();
+
+    let desc_expr = if description.is_empty() {
+        quote! { None }
+    } else {
+        quote! { Some(#description.to_string()) }
+    };
+
+    let output = quote! {
+        #(#attrs)*
+        #[derive(hayai::serde::Serialize, hayai::serde::Deserialize, hayai::schemars::JsonSchema)]
+        #[serde(crate = "hayai::serde")]
+        #[schemars(crate = "hayai::schemars")]
+        #vis enum #name {
+            #variants
+        }
+
+        impl hayai::Validate for #name {
+            fn validate(&self) -> Result<(), Vec<String>> { Ok(()) }
+        }
+
+        hayai::inventory::submit! {
+            hayai::SchemaInfo {
+                name: #name_str,
+                schema_fn: || {
+                    hayai::openapi::Schema {
+                        type_name: "string".to_string(),
+                        properties: std::collections::HashMap::new(),
+                        required: vec![],
+                        description: #desc_expr,
+                        enum_values: Some(vec![#(#variant_names.to_string()),*]),
+                    }
+                },
+                nested_fn: || std::collections::HashMap::new(),
+            }
+        }
+    };
+
+    output.into()
+}
+
+fn api_model_struct(input: ItemStruct) -> TokenStream {
     let name = &input.ident;
     let vis = &input.vis;
     let attrs = &input.attrs;
     let generics = &input.generics;
+    let struct_description = extract_doc_comment(attrs);
 
     let fields = match &input.fields {
         syn::Fields::Named(fields) => &fields.named,
@@ -234,12 +403,21 @@ pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut validation_checks = Vec::new();
     let mut schema_patches = Vec::new();
-
-    // Collect fields, stripping #[validate(...)] attributes for the re-emitted struct
     let mut clean_fields = Vec::new();
+
     for field in fields {
         let field_name = field.ident.as_ref().unwrap();
         let field_name_str = field_name.to_string();
+
+        // Extract doc comment for field description
+        let field_desc = extract_doc_comment(&field.attrs);
+        if !field_desc.is_empty() {
+            schema_patches.push(quote! {
+                if let Some(prop) = props.get_mut(#field_name_str) {
+                    prop.description = Some(#field_desc.to_string());
+                }
+            });
+        }
 
         for attr in &field.attrs {
             if !attr.path().is_ident("validate") { continue; }
@@ -299,18 +477,82 @@ pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             prop.format = Some("email".to_string());
                         }
                     });
+                } else if meta.path.is_ident("minimum") {
+                    let value = meta.value()?;
+                    let lit: syn::LitInt = value.parse()?;
+                    let min: i64 = lit.base10_parse()?;
+                    let min_f64 = min as f64;
+                    validation_checks.push(quote! {
+                        if (self.#field_name as f64) < #min_f64 {
+                            errors.push(format!("{}: must be at least {}", #field_name_str, #min));
+                        }
+                    });
+                    schema_patches.push(quote! {
+                        if let Some(prop) = props.get_mut(#field_name_str) {
+                            prop.minimum = Some(#min_f64);
+                        }
+                    });
+                } else if meta.path.is_ident("maximum") {
+                    let value = meta.value()?;
+                    let lit: syn::LitInt = value.parse()?;
+                    let max: i64 = lit.base10_parse()?;
+                    let max_f64 = max as f64;
+                    validation_checks.push(quote! {
+                        if (self.#field_name as f64) > #max_f64 {
+                            errors.push(format!("{}: must be at most {}", #field_name_str, #max));
+                        }
+                    });
+                    schema_patches.push(quote! {
+                        if let Some(prop) = props.get_mut(#field_name_str) {
+                            prop.maximum = Some(#max_f64);
+                        }
+                    });
+                } else if meta.path.is_ident("pattern") {
+                    let value = meta.value()?;
+                    let lit: syn::LitStr = value.parse()?;
+                    let pat = lit.value();
+                    validation_checks.push(quote! {
+                        {
+                            // Simple pattern check - full regex would need regex crate
+                            // For now store in schema, skip runtime validation
+                        }
+                    });
+                    schema_patches.push(quote! {
+                        if let Some(prop) = props.get_mut(#field_name_str) {
+                            prop.pattern = Some(#pat.to_string());
+                        }
+                    });
+                } else if meta.path.is_ident("min_items") {
+                    let value = meta.value()?;
+                    let lit: syn::LitInt = value.parse()?;
+                    let min: usize = lit.base10_parse()?;
+                    validation_checks.push(quote! {
+                        if self.#field_name.len() < #min {
+                            errors.push(format!("{}: must have at least {} items", #field_name_str, #min));
+                        }
+                    });
+                    schema_patches.push(quote! {
+                        if let Some(prop) = props.get_mut(#field_name_str) {
+                            prop.min_items = Some(#min);
+                        }
+                    });
                 }
                 Ok(())
             });
         }
 
-        // Strip validate attrs from field for re-emission
         let mut clean_field = field.clone();
         clean_field.attrs.retain(|a| !a.path().is_ident("validate"));
         clean_fields.push(clean_field);
     }
 
     let name_str = name.to_string();
+
+    let desc_expr = if struct_description.is_empty() {
+        quote! { None }
+    } else {
+        quote! { Some(#struct_description.to_string()) }
+    };
 
     let output = quote! {
         #(#attrs)*
@@ -342,10 +584,13 @@ pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     let base = hayai::schemars::schema_for!(#name);
                     let result = hayai::openapi::schema_from_schemars_full(#name_str, &base);
                     let mut schema = result.schema;
+                    schema.description = #desc_expr;
                     let mut patches = std::collections::HashMap::new();
                     for (name, _) in &schema.properties {
                         patches.insert(name.clone(), hayai::openapi::PropertyPatch {
                             min_length: None, max_length: None, format: None,
+                            minimum: None, maximum: None, pattern: None, min_items: None,
+                            description: None,
                         });
                     }
                     <#name as hayai::HasSchemaPatches>::patch_schema(&mut patches);
@@ -354,6 +599,11 @@ pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             if patch.min_length.is_some() { prop.min_length = patch.min_length; }
                             if patch.max_length.is_some() { prop.max_length = patch.max_length; }
                             if patch.format.is_some() { prop.format = patch.format; }
+                            if patch.minimum.is_some() { prop.minimum = patch.minimum; }
+                            if patch.maximum.is_some() { prop.maximum = patch.maximum; }
+                            if patch.pattern.is_some() { prop.pattern = patch.pattern.clone(); }
+                            if patch.min_items.is_some() { prop.min_items = patch.min_items; }
+                            if patch.description.is_some() { prop.description = patch.description.clone(); }
                         }
                     }
                     schema
@@ -370,9 +620,6 @@ pub fn api_model(_attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
-// Keep the old derive macro name but redirect - actually remove it since we use attribute macro now
-// We need to keep `ApiModel` as the name. Let's use a derive macro that's a no-op placeholder
-// and the attribute macro is `api_model`. But the task says users use `#[derive(ApiModel)]`.
-// 
-// Actually, derive macros can't add other derives. So we use `#[api_model]` attribute macro.
-// The derive(ApiModel) was the old API. New API is #[api_model].
+// TODO: #[produces("text/plain")] / Raw<T> for non-JSON responses.
+// This would require changes to the wrapper return type and OpenAPI content-type.
+// For now, all endpoints return application/json.

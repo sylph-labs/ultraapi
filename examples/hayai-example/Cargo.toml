@@ -6,3 +6,5 @@ edition = "2021"
 [dependencies]
 hayai = { path = "../../hayai" }
 tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"

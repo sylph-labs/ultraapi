@@ -2,7 +2,7 @@ use hayai::prelude::*;
 use hayai::axum;
 use serde_json::Value;
 
-// --- App setup (mirrors the example app) ---
+// --- App setup ---
 
 #[api_model]
 #[derive(Debug, Clone)]
@@ -37,6 +37,12 @@ struct UserWithAddress {
     nickname: Option<String>,
 }
 
+#[derive(hayai::serde::Deserialize, hayai::schemars::JsonSchema)]
+struct Pagination {
+    page: Option<i64>,
+    limit: Option<i64>,
+}
+
 struct Database;
 impl Database {
     async fn get_user(&self, id: i64) -> Option<User> {
@@ -45,16 +51,30 @@ impl Database {
     async fn create_user(&self, input: &CreateUser) -> User {
         User { id: 1, name: input.name.clone(), email: input.email.clone() }
     }
+    async fn list_users(&self, _page: Option<i64>, _limit: Option<i64>) -> Vec<User> {
+        vec![User { id: 1, name: "Alice".into(), email: "alice@example.com".into() }]
+    }
 }
 
+/// Get a user by ID
 #[get("/users/{id}")]
+#[tag("users")]
 async fn get_user(id: i64, db: Dep<Database>) -> User {
     db.get_user(id).await.unwrap()
 }
 
+/// Create a new user
 #[post("/users")]
+#[tag("users")]
 async fn create_user(body: CreateUser, db: Dep<Database>) -> User {
     db.create_user(&body).await
+}
+
+/// List users with pagination
+#[get("/users")]
+#[tag("users")]
+async fn list_users(query: Query<Pagination>, db: Dep<Database>) -> Vec<User> {
+    db.list_users(query.page, query.limit).await
 }
 
 // --- Helper ---
@@ -94,7 +114,7 @@ async fn test_create_user_valid() {
     let resp = client.post(format!("{base}/users"))
         .json(&serde_json::json!({"name": "Bob", "email": "bob@example.com"}))
         .send().await.unwrap();
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 201);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["name"], "Bob");
     assert_eq!(body["email"], "bob@example.com");
@@ -191,11 +211,115 @@ async fn test_nonexistent_route_returns_404() {
 
 #[tokio::test]
 async fn test_dep_injection_works() {
-    // Verify that Dep<Database> is properly injected by calling an endpoint that uses it
     let base = spawn_app().await;
     let resp = reqwest::get(format!("{base}/users/1")).await.unwrap();
     assert_eq!(resp.status(), 200);
-    // If dep injection failed, this would have panicked on the server side and returned 500
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["id"], 1);
+}
+
+// ---- Query Parameter E2E Tests ----
+
+#[tokio::test]
+async fn test_list_users_with_query_params() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/users?page=1&limit=10")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert!(body.as_array().unwrap().len() > 0);
+}
+
+#[tokio::test]
+async fn test_list_users_without_query_params() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/users")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// ---- OpenAPI Spec: Error Responses ----
+
+#[tokio::test]
+async fn test_openapi_error_responses() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+
+    // Check ApiError schema exists
+    assert!(body["components"]["schemas"]["ApiError"].is_object());
+
+    // Check POST /users has 400 and 422 error responses
+    let post_users = &body["paths"]["/users"]["post"];
+    assert!(post_users["responses"]["400"].is_object(), "should have 400 response");
+    assert!(post_users["responses"]["422"].is_object(), "should have 422 for body endpoints");
+    assert!(post_users["responses"]["500"].is_object(), "should have 500 response");
+
+    // GET endpoints should have 400 and 500 but not 422
+    let get_user = &body["paths"]["/users/{id}"]["get"];
+    assert!(get_user["responses"]["400"].is_object());
+    assert!(get_user["responses"]["500"].is_object());
+    assert!(!get_user["responses"]["422"].is_object(), "GET without body should not have 422");
+}
+
+// ---- OpenAPI Spec: Status Codes ----
+
+#[tokio::test]
+async fn test_openapi_status_codes() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+
+    // POST /users should have 201 (default for POST)
+    let post_users = &body["paths"]["/users"]["post"];
+    assert!(post_users["responses"]["201"].is_object(), "POST should default to 201");
+
+    // GET /users/{id} should have 200 (default for GET)
+    let get_user = &body["paths"]["/users/{id}"]["get"];
+    assert!(get_user["responses"]["200"].is_object(), "GET should default to 200");
+}
+
+// ---- OpenAPI Spec: Tags ----
+
+#[tokio::test]
+async fn test_openapi_tags() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+
+    let get_user = &body["paths"]["/users/{id}"]["get"];
+    let tags = get_user["tags"].as_array().unwrap();
+    assert!(tags.iter().any(|t| t == "users"));
+}
+
+// ---- OpenAPI Spec: Descriptions ----
+
+#[tokio::test]
+async fn test_openapi_descriptions() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+
+    let get_user = &body["paths"]["/users/{id}"]["get"];
+    assert_eq!(get_user["description"], "Get a user by ID");
+
+    let create_user = &body["paths"]["/users"]["post"];
+    assert_eq!(create_user["description"], "Create a new user");
+}
+
+// ---- OpenAPI Spec: Query Parameters ----
+
+#[tokio::test]
+async fn test_openapi_query_params() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+
+    let list_users = &body["paths"]["/users"]["get"];
+    let params = list_users["parameters"].as_array().unwrap();
+    let names: Vec<&str> = params.iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"page"), "should have page query param");
+    assert!(names.contains(&"limit"), "should have limit query param");
+    for p in params {
+        assert_eq!(p["in"], "query");
+        assert_eq!(p["required"], false, "Optional query params should not be required");
+    }
 }
