@@ -1,6 +1,6 @@
-use ultraapi::prelude::*;
-use ultraapi::axum;
 use serde_json::Value;
+use ultraapi::axum;
+use ultraapi::prelude::*;
 
 // --- App setup ---
 
@@ -46,14 +46,28 @@ struct Pagination {
 struct Database;
 impl Database {
     async fn get_user(&self, id: i64) -> Option<User> {
-        if id == 9999 { return None; }
-        Some(User { id, name: "Alice".into(), email: "alice@example.com".into() })
+        if id == 9999 {
+            return None;
+        }
+        Some(User {
+            id,
+            name: "Alice".into(),
+            email: "alice@example.com".into(),
+        })
     }
     async fn create_user(&self, input: &CreateUser) -> User {
-        User { id: 1, name: input.name.clone(), email: input.email.clone() }
+        User {
+            id: 1,
+            name: input.name.clone(),
+            email: input.email.clone(),
+        }
     }
     async fn list_users(&self, _page: Option<i64>, _limit: Option<i64>) -> Vec<User> {
-        vec![User { id: 1, name: "Alice".into(), email: "alice@example.com".into() }]
+        vec![User {
+            id: 1,
+            name: "Alice".into(),
+            email: "alice@example.com".into(),
+        }]
     }
 }
 
@@ -61,7 +75,8 @@ impl Database {
 #[get("/users/{id}")]
 #[tag("users")]
 async fn get_user(id: i64, db: Dep<Database>) -> Result<User, ApiError> {
-    db.get_user(id).await
+    db.get_user(id)
+        .await
         .ok_or_else(|| ApiError::not_found(format!("User {} not found", id)))
 }
 
@@ -113,9 +128,12 @@ async fn test_get_user_returns_200() {
 async fn test_create_user_valid() {
     let base = spawn_app().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{base}/users"))
+    let resp = client
+        .post(format!("{base}/users"))
         .json(&serde_json::json!({"name": "Bob", "email": "bob@example.com"}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 201);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["name"], "Bob");
@@ -126,9 +144,12 @@ async fn test_create_user_valid() {
 async fn test_create_user_empty_name_returns_422() {
     let base = spawn_app().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{base}/users"))
+    let resp = client
+        .post(format!("{base}/users"))
         .json(&serde_json::json!({"name": "", "email": "bob@example.com"}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 422);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "Validation failed");
@@ -139,23 +160,31 @@ async fn test_create_user_empty_name_returns_422() {
 async fn test_create_user_invalid_email_returns_422() {
     let base = spawn_app().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{base}/users"))
+    let resp = client
+        .post(format!("{base}/users"))
         .json(&serde_json::json!({"name": "Bob", "email": "notanemail"}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 422);
     let body: Value = resp.json().await.unwrap();
     let details = body["details"].as_array().unwrap();
-    assert!(details.iter().any(|d| d.as_str().unwrap().contains("email")));
+    assert!(details
+        .iter()
+        .any(|d| d.as_str().unwrap().contains("email")));
 }
 
 #[tokio::test]
 async fn test_create_user_malformed_json_returns_400() {
     let base = spawn_app().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{base}/users"))
+    let resp = client
+        .post(format!("{base}/users"))
         .header("content-type", "application/json")
         .body("{not json")
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 400);
 }
 
@@ -166,9 +195,15 @@ async fn test_openapi_spec() {
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["openapi"], "3.1.0");
-    assert!(body["paths"].as_object().unwrap().contains_key("/users/{id}"));
+    assert!(body["paths"]
+        .as_object()
+        .unwrap()
+        .contains_key("/users/{id}"));
     assert!(body["paths"].as_object().unwrap().contains_key("/users"));
-    assert!(body["components"]["schemas"].as_object().unwrap().contains_key("User"));
+    assert!(body["components"]["schemas"]
+        .as_object()
+        .unwrap()
+        .contains_key("User"));
 }
 
 #[tokio::test]
@@ -177,22 +212,36 @@ async fn test_openapi_nested_schemas() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     let body: Value = resp.json().await.unwrap();
     let schemas = &body["components"]["schemas"];
-    
+
     // Address should exist as a nested schema
-    assert!(schemas.get("Address").is_some(), "Address schema should be in components/schemas");
+    assert!(
+        schemas.get("Address").is_some(),
+        "Address schema should be in components/schemas"
+    );
     assert_eq!(schemas["Address"]["type"], "object");
     assert!(schemas["Address"]["properties"]["city"]["type"] == "string");
-    
+
     // UserWithAddress should have $ref for address
     assert!(schemas.get("UserWithAddress").is_some());
-    assert_eq!(schemas["UserWithAddress"]["properties"]["address"]["$ref"], "#/components/schemas/Address");
-    
+    assert_eq!(
+        schemas["UserWithAddress"]["properties"]["address"]["$ref"],
+        "#/components/schemas/Address"
+    );
+
     // tags should be array
-    assert_eq!(schemas["UserWithAddress"]["properties"]["tags"]["type"], "array");
-    assert_eq!(schemas["UserWithAddress"]["properties"]["tags"]["items"]["type"], "string");
-    
+    assert_eq!(
+        schemas["UserWithAddress"]["properties"]["tags"]["type"],
+        "array"
+    );
+    assert_eq!(
+        schemas["UserWithAddress"]["properties"]["tags"]["items"]["type"],
+        "string"
+    );
+
     // nickname should be nullable (anyOf)
-    assert!(schemas["UserWithAddress"]["properties"]["nickname"].get("anyOf").is_some());
+    assert!(schemas["UserWithAddress"]["properties"]["nickname"]
+        .get("anyOf")
+        .is_some());
 }
 
 #[tokio::test]
@@ -225,10 +274,12 @@ async fn test_dep_injection_works() {
 #[tokio::test]
 async fn test_list_users_with_query_params() {
     let base = spawn_app().await;
-    let resp = reqwest::get(format!("{base}/users?page=1&limit=10")).await.unwrap();
+    let resp = reqwest::get(format!("{base}/users?page=1&limit=10"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert!(body.as_array().unwrap().len() > 0);
+    assert!(!body.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -251,15 +302,27 @@ async fn test_openapi_error_responses() {
 
     // Check POST /users has 400 and 422 error responses
     let post_users = &body["paths"]["/users"]["post"];
-    assert!(post_users["responses"]["400"].is_object(), "should have 400 response");
-    assert!(post_users["responses"]["422"].is_object(), "should have 422 for body endpoints");
-    assert!(post_users["responses"]["500"].is_object(), "should have 500 response");
+    assert!(
+        post_users["responses"]["400"].is_object(),
+        "should have 400 response"
+    );
+    assert!(
+        post_users["responses"]["422"].is_object(),
+        "should have 422 for body endpoints"
+    );
+    assert!(
+        post_users["responses"]["500"].is_object(),
+        "should have 500 response"
+    );
 
     // GET endpoints should have 400 and 500 but not 422
     let get_user = &body["paths"]["/users/{id}"]["get"];
     assert!(get_user["responses"]["400"].is_object());
     assert!(get_user["responses"]["500"].is_object());
-    assert!(!get_user["responses"]["422"].is_object(), "GET without body should not have 422");
+    assert!(
+        !get_user["responses"]["422"].is_object(),
+        "GET without body should not have 422"
+    );
 }
 
 // ---- OpenAPI Spec: Status Codes ----
@@ -272,11 +335,17 @@ async fn test_openapi_status_codes() {
 
     // POST /users should have 201 (default for POST)
     let post_users = &body["paths"]["/users"]["post"];
-    assert!(post_users["responses"]["201"].is_object(), "POST should default to 201");
+    assert!(
+        post_users["responses"]["201"].is_object(),
+        "POST should default to 201"
+    );
 
     // GET /users/{id} should have 200 (default for GET)
     let get_user = &body["paths"]["/users/{id}"]["get"];
-    assert!(get_user["responses"]["200"].is_object(), "GET should default to 200");
+    assert!(
+        get_user["responses"]["200"].is_object(),
+        "GET should default to 200"
+    );
 }
 
 // ---- OpenAPI Spec: Tags ----
@@ -322,7 +391,10 @@ async fn test_openapi_query_params() {
     assert!(names.contains(&"limit"), "should have limit query param");
     for p in params {
         assert_eq!(p["in"], "query");
-        assert_eq!(p["required"], false, "Optional query params should not be required");
+        assert_eq!(
+            p["required"], false,
+            "Optional query params should not be required"
+        );
     }
 }
 
@@ -338,8 +410,14 @@ async fn test_openapi_vec_response_schema() {
     let get_users = &body["paths"]["/users"]["get"];
     let success_resp = &get_users["responses"]["200"];
     let schema = &success_resp["content"]["application/json"]["schema"];
-    assert_eq!(schema["type"], "array", "Vec<T> response should be array type");
-    assert_eq!(schema["items"]["$ref"], "#/components/schemas/User", "Array items should $ref User");
+    assert_eq!(
+        schema["type"], "array",
+        "Vec<T> response should be array type"
+    );
+    assert_eq!(
+        schema["items"]["$ref"], "#/components/schemas/User",
+        "Array items should $ref User"
+    );
 }
 
 // ---- Enum $ref E2E ----
@@ -373,12 +451,18 @@ struct Item {
 
 #[get("/e2e-rt-list")]
 async fn e2e_list_items() -> Vec<Item> {
-    vec![Item { id: 1, name: "Widget".into() }]
+    vec![Item {
+        id: 1,
+        name: "Widget".into(),
+    }]
 }
 
 #[get("/e2e-rt-item/{id}")]
 async fn e2e_get_item(id: i64) -> Item {
-    Item { id, name: "Widget".into() }
+    Item {
+        id,
+        name: "Widget".into(),
+    }
 }
 
 #[delete("/e2e-rt-del/{id}")]
@@ -412,7 +496,9 @@ async fn spawn_router_app() -> String {
 #[tokio::test]
 async fn test_router_e2e_get_prefixed_path() {
     let base = spawn_router_app().await;
-    let resp = reqwest::get(format!("{base}/api/items/e2e-rt-item/42")).await.unwrap();
+    let resp = reqwest::get(format!("{base}/api/items/e2e-rt-item/42"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["id"], 42);
@@ -422,17 +508,23 @@ async fn test_router_e2e_get_prefixed_path() {
 #[tokio::test]
 async fn test_router_e2e_list_prefixed_path() {
     let base = spawn_router_app().await;
-    let resp = reqwest::get(format!("{base}/api/items/e2e-rt-list")).await.unwrap();
+    let resp = reqwest::get(format!("{base}/api/items/e2e-rt-list"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
-    assert!(body.as_array().unwrap().len() > 0);
+    assert!(!body.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn test_router_e2e_delete_returns_204() {
     let base = spawn_router_app().await;
     let client = reqwest::Client::new();
-    let resp = client.delete(format!("{base}/api/items/e2e-rt-del/1")).send().await.unwrap();
+    let resp = client
+        .delete(format!("{base}/api/items/e2e-rt-del/1"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 204);
 }
 
@@ -447,11 +539,15 @@ async fn test_router_e2e_openapi_prefixed_paths() {
     assert!(body["paths"]["/api/items/e2e-rt-item/{id}"]["get"].is_object());
 
     // Tags should include router-level tag
-    let tags = body["paths"]["/api/items/e2e-rt-list"]["get"]["tags"].as_array().unwrap();
+    let tags = body["paths"]["/api/items/e2e-rt-list"]["get"]["tags"]
+        .as_array()
+        .unwrap();
     assert!(tags.iter().any(|t| t == "items"));
 
     // Security should include router-level security
-    let sec = body["paths"]["/api/items/e2e-rt-list"]["get"]["security"].as_array().unwrap();
+    let sec = body["paths"]["/api/items/e2e-rt-list"]["get"]["security"]
+        .as_array()
+        .unwrap();
     assert!(sec.iter().any(|s| s.get("bearerAuth").is_some()));
 }
 
@@ -465,16 +561,11 @@ async fn test_router_e2e_original_path_not_registered() {
 
 #[tokio::test]
 async fn test_router_e2e_nested_routers() {
-    let items = ultraapi::UltraApiRouter::new("/items")
-        .route(__HAYAI_ROUTE_E2E_LIST_ITEMS);
-    let v1 = ultraapi::UltraApiRouter::new("/v1")
-        .include(items);
-    let api = ultraapi::UltraApiRouter::new("/api")
-        .include(v1);
+    let items = ultraapi::UltraApiRouter::new("/items").route(__HAYAI_ROUTE_E2E_LIST_ITEMS);
+    let v1 = ultraapi::UltraApiRouter::new("/v1").include(items);
+    let api = ultraapi::UltraApiRouter::new("/api").include(v1);
 
-    let app = UltraApiApp::new()
-        .include(api)
-        .into_router();
+    let app = UltraApiApp::new().include(api).into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -483,7 +574,9 @@ async fn test_router_e2e_nested_routers() {
     });
     let base = format!("http://{}", addr);
 
-    let resp = reqwest::get(format!("{base}/api/v1/items/e2e-rt-list")).await.unwrap();
+    let resp = reqwest::get(format!("{base}/api/v1/items/e2e-rt-list"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -512,7 +605,9 @@ async fn test_result_handler_not_found_returns_404() {
 async fn test_result_handler_bad_request_returns_400() {
     // Test a Result-returning handler that returns bad_request error
     let base = spawn_result_app().await;
-    let resp = reqwest::get(format!("{base}/result-test/bad")).await.unwrap();
+    let resp = reqwest::get(format!("{base}/result-test/bad"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 400);
     let body: Value = resp.json().await.unwrap();
     assert!(body["error"].as_str().unwrap().contains("bad input"));
@@ -526,7 +621,10 @@ async fn test_openapi_result_handler_has_404_response() {
 
     // GET /users/{id} returns Result, should have 404 response
     let get_user = &body["paths"]["/users/{id}"]["get"];
-    assert!(get_user["responses"]["404"].is_object(), "Result handler should have 404 response");
+    assert!(
+        get_user["responses"]["404"].is_object(),
+        "Result handler should have 404 response"
+    );
     assert_eq!(get_user["responses"]["404"]["description"], "Not Found");
 }
 
@@ -541,14 +639,20 @@ struct UpdateItem {
 
 #[put("/e2e-put-item/{id}")]
 async fn e2e_put_item(id: i64, body: UpdateItem) -> Item {
-    Item { id, name: body.name }
+    Item {
+        id,
+        name: body.name,
+    }
 }
 
 #[get("/result-test/{mode}")]
 async fn e2e_result_test(mode: String) -> Result<Item, ApiError> {
     match mode.as_str() {
         "bad" => Err(ApiError::bad_request("bad input".to_string())),
-        _ => Ok(Item { id: 1, name: "ok".into() }),
+        _ => Ok(Item {
+            id: 1,
+            name: "ok".into(),
+        }),
     }
 }
 
@@ -556,10 +660,7 @@ async fn spawn_result_app() -> String {
     let app = UltraApiApp::new()
         .title("Result Test API")
         .version("0.1.0")
-        .include(
-            ultraapi::UltraApiRouter::new("")
-                .route(__HAYAI_ROUTE_E2E_RESULT_TEST)
-        )
+        .include(ultraapi::UltraApiRouter::new("").route(__HAYAI_ROUTE_E2E_RESULT_TEST))
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -574,10 +675,7 @@ async fn spawn_put_app() -> String {
     let app = UltraApiApp::new()
         .title("PUT Test API")
         .version("0.1.0")
-        .include(
-            ultraapi::UltraApiRouter::new("/api")
-                .route(__HAYAI_ROUTE_E2E_PUT_ITEM)
-        )
+        .include(ultraapi::UltraApiRouter::new("/api").route(__HAYAI_ROUTE_E2E_PUT_ITEM))
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -592,9 +690,12 @@ async fn spawn_put_app() -> String {
 async fn test_put_returns_200() {
     let base = spawn_put_app().await;
     let client = reqwest::Client::new();
-    let resp = client.put(format!("{base}/api/e2e-put-item/5"))
+    let resp = client
+        .put(format!("{base}/api/e2e-put-item/5"))
         .json(&serde_json::json!({"name": "Updated"}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["id"], 5);
@@ -605,9 +706,12 @@ async fn test_put_returns_200() {
 async fn test_put_validation_error_returns_422() {
     let base = spawn_put_app().await;
     let client = reqwest::Client::new();
-    let resp = client.put(format!("{base}/api/e2e-put-item/5"))
+    let resp = client
+        .put(format!("{base}/api/e2e-put-item/5"))
         .json(&serde_json::json!({"name": ""}))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 422);
 }
 
@@ -616,7 +720,10 @@ async fn test_put_openapi_spec() {
     let base = spawn_put_app().await;
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     let body: Value = resp.json().await.unwrap();
-    assert!(body["paths"]["/api/e2e-put-item/{id}"]["put"].is_object(), "PUT should appear in OpenAPI spec");
+    assert!(
+        body["paths"]["/api/e2e-put-item/{id}"]["put"].is_object(),
+        "PUT should appear in OpenAPI spec"
+    );
 }
 
 // --- State<T> tests ---
@@ -627,12 +734,18 @@ struct Config {
 
 #[get("/state-info")]
 async fn get_state_info(cfg: State<Config>) -> User {
-    User { id: 0, name: cfg.app_name.clone(), email: "config@test.com".into() }
+    User {
+        id: 0,
+        name: cfg.app_name.clone(),
+        email: "config@test.com".into(),
+    }
 }
 
 #[get("/state-user/{id}")]
 async fn get_state_user(id: i64, db: Dep<Database>, cfg: State<Config>) -> Result<User, ApiError> {
-    let mut user = db.get_user(id).await
+    let mut user = db
+        .get_user(id)
+        .await
         .ok_or_else(|| ApiError::not_found(format!("User {} not found", id)))?;
     user.name = format!("{} ({})", user.name, cfg.app_name);
     Ok(user)
@@ -641,11 +754,15 @@ async fn get_state_user(id: i64, db: Dep<Database>, cfg: State<Config>) -> Resul
 async fn spawn_state_app() -> String {
     let app = UltraApiApp::new()
         .dep(Database)
-        .dep(Config { app_name: "TestApp".into() })
+        .dep(Config {
+            app_name: "TestApp".into(),
+        })
         .into_router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
     format!("http://{}", addr)
 }
 
@@ -672,19 +789,21 @@ async fn test_state_missing_returns_500() {
     // App without Config registered
     let app = UltraApiApp::new()
         .dep(Database)
-        .include(
-            UltraApiRouter::new("")
-                .route(__HAYAI_ROUTE_GET_STATE_INFO)
-        )
+        .include(UltraApiRouter::new("").route(__HAYAI_ROUTE_GET_STATE_INFO))
         .into_router();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
     let base = format!("http://{}", addr);
     let resp = reqwest::get(format!("{base}/state-info")).await.unwrap();
     assert_eq!(resp.status(), 500);
     let body: Value = resp.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("State not registered"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("State not registered"));
 }
 
 // ===== Cross-field Validation Tests =====
@@ -717,15 +836,14 @@ async fn spawn_date_range_app() -> String {
     let app = UltraApiApp::new()
         .title("Date Range Test API")
         .version("0.1.0")
-        .include(
-            UltraApiRouter::new("")
-                .route(__HAYAI_ROUTE_CREATE_DATE_RANGE)
-        )
+        .include(UltraApiRouter::new("").route(__HAYAI_ROUTE_CREATE_DATE_RANGE))
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
     format!("http://{}", addr)
 }
 
@@ -733,13 +851,16 @@ async fn spawn_date_range_app() -> String {
 async fn test_cross_field_validation_valid_dates_returns_201() {
     let base = spawn_date_range_app().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{base}/date-range"))
+    let resp = client
+        .post(format!("{base}/date-range"))
         .json(&serde_json::json!({
             "name": "Summer Vacation",
             "start_date": "2024-06-01",
             "end_date": "2024-08-31"
         }))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 201);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["name"], "Summer Vacation");
@@ -749,33 +870,45 @@ async fn test_cross_field_validation_valid_dates_returns_201() {
 async fn test_cross_field_validation_invalid_dates_returns_422() {
     let base = spawn_date_range_app().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{base}/date-range"))
+    let resp = client
+        .post(format!("{base}/date-range"))
         .json(&serde_json::json!({
             "name": "Invalid Range",
             "start_date": "2024-08-01",
             "end_date": "2024-06-01"
         }))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 422);
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "Validation failed");
     let details = body["details"].as_array().unwrap();
-    assert!(details.iter().any(|d| d.as_str().unwrap().contains("end_date must be after start_date")));
+    assert!(details.iter().any(|d| d
+        .as_str()
+        .unwrap()
+        .contains("end_date must be after start_date")));
 }
 
 #[tokio::test]
 async fn test_cross_field_validation_same_date_returns_422() {
     let base = spawn_date_range_app().await;
     let client = reqwest::Client::new();
-    let resp = client.post(format!("{base}/date-range"))
+    let resp = client
+        .post(format!("{base}/date-range"))
         .json(&serde_json::json!({
             "name": "Same Day",
             "start_date": "2024-06-01",
             "end_date": "2024-06-01"
         }))
-        .send().await.unwrap();
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 422);
     let body: Value = resp.json().await.unwrap();
     let details = body["details"].as_array().unwrap();
-    assert!(details.iter().any(|d| d.as_str().unwrap().contains("end_date must be after start_date")));
+    assert!(details.iter().any(|d| d
+        .as_str()
+        .unwrap()
+        .contains("end_date must be after start_date")));
 }

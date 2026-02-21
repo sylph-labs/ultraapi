@@ -2,6 +2,11 @@
 name = "ultraapi"
 version = "0.1.0"
 edition = "2021"
+description = "A FastAPI-inspired Rust web framework with automatic OpenAPI generation"
+license = "MIT"
+repository = "https://github.com/sylph-labs/ultraapi"
+keywords = ["axum", "fastapi", "openapi", "web", "async", "rest", "api"]
+categories = ["asynchronous", "web-programming", "api-bindings"]
 
 [dependencies]
 ultraapi-macros = { path = "../ultraapi-macros" }

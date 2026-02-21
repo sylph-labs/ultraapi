@@ -2,8 +2,8 @@
 
 #[cfg(test)]
 mod tests {
-    use ultraapi::openapi::{Discriminator, Schema};
     use std::collections::HashMap;
+    use ultraapi::openapi::{Discriminator, Schema};
 
     // Test that plain enums still work correctly with enum values
     #[test]
@@ -16,24 +16,36 @@ mod tests {
     #[test]
     fn test_discriminator_creation() {
         let mut mapping = HashMap::new();
-        mapping.insert("Click".to_string(), "#/components/schemas/Event_Click".to_string());
-        mapping.insert("KeyPress".to_string(), "#/components/schemas/Event_KeyPress".to_string());
-        
+        mapping.insert(
+            "Click".to_string(),
+            "#/components/schemas/Event_Click".to_string(),
+        );
+        mapping.insert(
+            "KeyPress".to_string(),
+            "#/components/schemas/Event_KeyPress".to_string(),
+        );
+
         let discriminator = Discriminator {
             property_name: "type".to_string(),
             mapping,
         };
-        
+
         assert_eq!(discriminator.property_name, "type");
-        assert_eq!(discriminator.mapping.get("Click").unwrap(), "#/components/schemas/Event_Click");
+        assert_eq!(
+            discriminator.mapping.get("Click").unwrap(),
+            "#/components/schemas/Event_Click"
+        );
     }
 
     // Test Schema with oneOf can be created
     #[test]
     fn test_schema_with_oneof() {
         let mut mapping = HashMap::new();
-        mapping.insert("Click".to_string(), "#/components/schemas/Event_Click".to_string());
-        
+        mapping.insert(
+            "Click".to_string(),
+            "#/components/schemas/Event_Click".to_string(),
+        );
+
         let schema = Schema {
             type_name: "object".to_string(),
             properties: HashMap::new(),
@@ -47,7 +59,7 @@ mod tests {
                 mapping,
             }),
         };
-        
+
         assert!(schema.one_of.is_some());
         assert!(schema.discriminator.is_some());
     }
@@ -56,9 +68,15 @@ mod tests {
     #[test]
     fn test_to_json_value_with_discriminator() {
         let mut mapping = HashMap::new();
-        mapping.insert("Click".to_string(), "#/components/schemas/Event_Click".to_string());
-        mapping.insert("KeyPress".to_string(), "#/components/schemas/Event_KeyPress".to_string());
-        
+        mapping.insert(
+            "Click".to_string(),
+            "#/components/schemas/Event_Click".to_string(),
+        );
+        mapping.insert(
+            "KeyPress".to_string(),
+            "#/components/schemas/Event_KeyPress".to_string(),
+        );
+
         let schema = Schema {
             type_name: "object".to_string(),
             properties: HashMap::new(),
@@ -75,19 +93,19 @@ mod tests {
                 mapping,
             }),
         };
-        
+
         let json = schema.to_json_value();
-        
+
         // Should have oneOf
         assert!(json.get("oneOf").is_some());
         let one_of = json.get("oneOf").unwrap();
         assert!(one_of.is_array());
-        
+
         // Should have discriminator
         assert!(json.get("discriminator").is_some());
         let disc = json.get("discriminator").unwrap();
         assert_eq!(disc.get("propertyName").unwrap(), "type");
-        
+
         // Should have mapping
         let mapping = disc.get("mapping").unwrap();
         assert!(mapping.get("Click").is_some());

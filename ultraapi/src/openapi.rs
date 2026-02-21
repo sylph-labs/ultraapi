@@ -82,7 +82,10 @@ impl OpenApiSpec {
             }
         }
 
-        if let Some(schemas) = val.pointer_mut("/components/schemas").and_then(|v| v.as_object_mut()) {
+        if let Some(schemas) = val
+            .pointer_mut("/components/schemas")
+            .and_then(|v| v.as_object_mut())
+        {
             for (name, schema) in &self.schemas {
                 schemas.insert(name.clone(), schema.to_json_value());
             }
@@ -134,11 +137,21 @@ impl Serialize for Operation {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
-        if !self.tags.is_empty() { map.serialize_entry("tags", &self.tags)?; }
-        if let Some(s) = &self.summary { map.serialize_entry("summary", s)?; }
-        if let Some(s) = &self.description { map.serialize_entry("description", s)?; }
-        if let Some(s) = &self.operation_id { map.serialize_entry("operationId", s)?; }
-        if !self.parameters.is_empty() { map.serialize_entry("parameters", &self.parameters)?; }
+        if !self.tags.is_empty() {
+            map.serialize_entry("tags", &self.tags)?;
+        }
+        if let Some(s) = &self.summary {
+            map.serialize_entry("summary", s)?;
+        }
+        if let Some(s) = &self.description {
+            map.serialize_entry("description", s)?;
+        }
+        if let Some(s) = &self.operation_id {
+            map.serialize_entry("operationId", s)?;
+        }
+        if !self.parameters.is_empty() {
+            map.serialize_entry("parameters", &self.parameters)?;
+        }
         if let Some(rb) = &self.request_body {
             map.serialize_entry("requestBody", &rb.to_json_value())?;
         }
@@ -148,7 +161,10 @@ impl Serialize for Operation {
         let mut resp = serde_json::Map::new();
         for (code, r) in &self.responses {
             let mut obj = serde_json::Map::new();
-            obj.insert("description".into(), serde_json::Value::String(r.description.clone()));
+            obj.insert(
+                "description".into(),
+                serde_json::Value::String(r.description.clone()),
+            );
             if let Some(schema_ref) = &r.schema_ref {
                 let content = serde_json::json!({
                     "application/json": {
@@ -198,11 +214,21 @@ impl Serialize for DynParameter {
         map.serialize_entry("in", &self.location)?;
         map.serialize_entry("required", &self.required)?;
         let mut schema = serde_json::json!({"type": self.schema_type});
-        if let Some(v) = self.minimum { schema["minimum"] = serde_json::json!(v); }
-        if let Some(v) = self.maximum { schema["maximum"] = serde_json::json!(v); }
-        if let Some(v) = self.min_length { schema["minLength"] = serde_json::json!(v); }
-        if let Some(v) = self.max_length { schema["maxLength"] = serde_json::json!(v); }
-        if let Some(v) = &self.pattern { schema["pattern"] = serde_json::json!(v); }
+        if let Some(v) = self.minimum {
+            schema["minimum"] = serde_json::json!(v);
+        }
+        if let Some(v) = self.maximum {
+            schema["maximum"] = serde_json::json!(v);
+        }
+        if let Some(v) = self.min_length {
+            schema["minLength"] = serde_json::json!(v);
+        }
+        if let Some(v) = self.max_length {
+            schema["maxLength"] = serde_json::json!(v);
+        }
+        if let Some(v) = &self.pattern {
+            schema["pattern"] = serde_json::json!(v);
+        }
         map.serialize_entry("schema", &schema)?;
         if let Some(desc) = &self.description {
             map.serialize_entry("description", desc)?;
@@ -290,14 +316,17 @@ impl Schema {
 
         // Discriminated union (oneOf with discriminator)
         if let (Some(one_of_refs), Some(discriminator)) = (&self.one_of, &self.discriminator) {
-            let one_of: Vec<serde_json::Value> = one_of_refs.iter()
+            let one_of: Vec<serde_json::Value> = one_of_refs
+                .iter()
                 .map(|r| serde_json::json!({ "$ref": r }))
                 .collect();
-            
-            let mapping: serde_json::Map<String, serde_json::Value> = discriminator.mapping.iter()
+
+            let mapping: serde_json::Map<String, serde_json::Value> = discriminator
+                .mapping
+                .iter()
                 .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
                 .collect();
-            
+
             return serde_json::json!({
                 "oneOf": one_of,
                 "discriminator": {
@@ -373,19 +402,31 @@ impl Property {
 
         if self.nullable {
             let mut inner = serde_json::Map::new();
-            inner.insert("type".into(), serde_json::Value::String(self.type_name.clone()));
+            inner.insert(
+                "type".into(),
+                serde_json::Value::String(self.type_name.clone()),
+            );
             self.add_constraints(&mut inner);
-            obj.insert("anyOf".into(), serde_json::json!([
-                serde_json::Value::Object(inner),
-                { "type": "null" }
-            ]));
+            obj.insert(
+                "anyOf".into(),
+                serde_json::json!([
+                    serde_json::Value::Object(inner),
+                    { "type": "null" }
+                ]),
+            );
         } else {
-            obj.insert("type".into(), serde_json::Value::String(self.type_name.clone()));
+            obj.insert(
+                "type".into(),
+                serde_json::Value::String(self.type_name.clone()),
+            );
             self.add_constraints(&mut obj);
         }
 
         if let Some(desc) = &self.description {
-            obj.insert("description".into(), serde_json::Value::String(desc.clone()));
+            obj.insert(
+                "description".into(),
+                serde_json::Value::String(desc.clone()),
+            );
         }
 
         if let Some(example) = &self.example {
@@ -476,21 +517,27 @@ pub fn schema_from_schemars_full(_name: &str, root: &schemars::schema::RootSchem
                 let mut def_props = HashMap::new();
                 let mut def_required = Vec::new();
                 for (pname, pschema) in &obj_val.properties {
-                    def_props.insert(pname.clone(), property_from_schemars_schema(pschema, &root.definitions));
+                    def_props.insert(
+                        pname.clone(),
+                        property_from_schemars_schema(pschema, &root.definitions),
+                    );
                 }
                 for req in &obj_val.required {
                     def_required.push(req.clone());
                 }
-                nested.insert(def_name.clone(), Schema {
-                    type_name: "object".to_string(),
-                    properties: def_props,
-                    required: def_required,
-                    description: None,
-                    enum_values: None,
-                    example: None,
-                    one_of: None,
-                    discriminator: None,
-                });
+                nested.insert(
+                    def_name.clone(),
+                    Schema {
+                        type_name: "object".to_string(),
+                        properties: def_props,
+                        required: def_required,
+                        description: None,
+                        enum_values: None,
+                        example: None,
+                        one_of: None,
+                        discriminator: None,
+                    },
+                );
             }
         }
     }
@@ -537,7 +584,16 @@ pub fn query_params_from_schema(root: &schemars::schema::RootSchema) -> Vec<DynP
 }
 
 /// Extract numeric/string constraints from a schemars schema
-fn extract_schema_constraints(schema: &schemars::schema::Schema) -> (Option<f64>, Option<f64>, Option<u32>, Option<u32>, Option<String>) {
+#[allow(clippy::type_complexity)]
+fn extract_schema_constraints(
+    schema: &schemars::schema::Schema,
+) -> (
+    Option<f64>,
+    Option<f64>,
+    Option<u32>,
+    Option<u32>,
+    Option<String>,
+) {
     match schema {
         schemars::schema::Schema::Object(obj) => {
             // For Option<T> (anyOf), look inside the non-null variant
@@ -545,7 +601,8 @@ fn extract_schema_constraints(schema: &schemars::schema::Schema) -> (Option<f64>
                 if let Some(any_of) = &sub.any_of {
                     for s in any_of {
                         if let schemars::schema::Schema::Object(o) = s {
-                            if let Some(schemars::schema::SingleOrVec::Single(t)) = &o.instance_type {
+                            if let Some(schemars::schema::SingleOrVec::Single(t)) = &o.instance_type
+                            {
                                 if **t != schemars::schema::InstanceType::Null {
                                     return extract_schema_constraints(s);
                                 }
@@ -599,7 +656,8 @@ fn schema_type_string(schema: &schemars::schema::Schema) -> String {
                 if let Some(any_of) = &sub.any_of {
                     for s in any_of {
                         if let schemars::schema::Schema::Object(o) = s {
-                            if let Some(schemars::schema::SingleOrVec::Single(t)) = &o.instance_type {
+                            if let Some(schemars::schema::SingleOrVec::Single(t)) = &o.instance_type
+                            {
                                 if **t != schemars::schema::InstanceType::Null {
                                     return format_instance_type(t);
                                 }
@@ -611,12 +669,11 @@ fn schema_type_string(schema: &schemars::schema::Schema) -> String {
             if let Some(ty) = &obj.instance_type {
                 match ty {
                     schemars::schema::SingleOrVec::Single(t) => format_instance_type(t),
-                    schemars::schema::SingleOrVec::Vec(vec) => {
-                        vec.iter()
-                            .find(|t| **t != schemars::schema::InstanceType::Null)
-                            .map(|t| format_instance_type(t))
-                            .unwrap_or_else(|| "string".to_string())
-                    }
+                    schemars::schema::SingleOrVec::Vec(vec) => vec
+                        .iter()
+                        .find(|t| **t != schemars::schema::InstanceType::Null)
+                        .map(format_instance_type)
+                        .unwrap_or_else(|| "string".to_string()),
                 }
             } else {
                 "string".to_string()
@@ -629,27 +686,59 @@ fn schema_type_string(schema: &schemars::schema::Schema) -> String {
 /// Generate the standard ApiError schema
 pub fn api_error_schema() -> Schema {
     let mut properties = HashMap::new();
-    properties.insert("error".to_string(), Property {
-        type_name: "string".to_string(),
-        format: None, min_length: None, max_length: None,
-        minimum: None, maximum: None, pattern: None, min_items: None,
-        description: Some("Error message".to_string()),
-        ref_path: None, items: None, nullable: false, example: None, additional_properties: None,
-    });
-    properties.insert("details".to_string(), Property {
-        type_name: "array".to_string(),
-        format: None, min_length: None, max_length: None,
-        minimum: None, maximum: None, pattern: None, min_items: None,
-        description: Some("Validation error details".to_string()),
-        ref_path: None,
-        items: Some(Box::new(Property {
+    properties.insert(
+        "error".to_string(),
+        Property {
             type_name: "string".to_string(),
-            format: None, min_length: None, max_length: None,
-            minimum: None, maximum: None, pattern: None, min_items: None,
-            description: None, ref_path: None, items: None, nullable: false, example: None, additional_properties: None,
-        })),
-        nullable: false, example: None, additional_properties: None,
-    });
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Error message".to_string()),
+            ref_path: None,
+            items: None,
+            nullable: false,
+            example: None,
+            additional_properties: None,
+        },
+    );
+    properties.insert(
+        "details".to_string(),
+        Property {
+            type_name: "array".to_string(),
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Validation error details".to_string()),
+            ref_path: None,
+            items: Some(Box::new(Property {
+                type_name: "string".to_string(),
+                format: None,
+                min_length: None,
+                max_length: None,
+                minimum: None,
+                maximum: None,
+                pattern: None,
+                min_items: None,
+                description: None,
+                ref_path: None,
+                items: None,
+                nullable: false,
+                example: None,
+                additional_properties: None,
+            })),
+            nullable: false,
+            example: None,
+            additional_properties: None,
+        },
+    );
     Schema {
         type_name: "object".to_string(),
         properties,
@@ -662,6 +751,7 @@ pub fn api_error_schema() -> Schema {
     }
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn property_from_schemars_schema(
     schema: &schemars::schema::Schema,
     definitions: &schemars::Map<String, schemars::schema::Schema>,
@@ -672,25 +762,40 @@ fn property_from_schemars_schema(
                 let ref_name = reference.trim_start_matches("#/definitions/");
                 return Property {
                     type_name: "object".to_string(),
-                    format: None, min_length: None, max_length: None,
-                    minimum: None, maximum: None, pattern: None, min_items: None,
+                    format: None,
+                    min_length: None,
+                    max_length: None,
+                    minimum: None,
+                    maximum: None,
+                    pattern: None,
+                    min_items: None,
                     description: None,
                     ref_path: Some(format!("#/components/schemas/{}", ref_name)),
-                    items: None, nullable: false, example: None, additional_properties: None,
+                    items: None,
+                    nullable: false,
+                    example: None,
+                    additional_properties: None,
                 };
             }
 
             if let Some(subschemas) = &obj.subschemas {
                 if let Some(any_of) = &subschemas.any_of {
-                    let non_null: Vec<_> = any_of.iter().filter(|s| {
-                        if let schemars::schema::Schema::Object(o) = s {
-                            if let Some(schemars::schema::SingleOrVec::Single(t)) = &o.instance_type {
-                                return **t != schemars::schema::InstanceType::Null;
+                    let non_null: Vec<_> = any_of
+                        .iter()
+                        .filter(|s| {
+                            if let schemars::schema::Schema::Object(o) = s {
+                                if let Some(schemars::schema::SingleOrVec::Single(t)) =
+                                    &o.instance_type
+                                {
+                                    return **t != schemars::schema::InstanceType::Null;
+                                }
+                                return o.reference.is_some()
+                                    || o.object.is_some()
+                                    || o.array.is_some();
                             }
-                            return o.reference.is_some() || o.object.is_some() || o.array.is_some();
-                        }
-                        false
-                    }).collect();
+                            false
+                        })
+                        .collect();
 
                     if let Some(inner) = non_null.first() {
                         let mut prop = property_from_schemars_schema(inner, definitions);
@@ -704,10 +809,11 @@ fn property_from_schemars_schema(
                 let type_name = match ty {
                     schemars::schema::SingleOrVec::Single(single) => format_instance_type(single),
                     schemars::schema::SingleOrVec::Vec(vec) => {
-                        let non_null: Vec<_> = vec.iter()
+                        let non_null: Vec<_> = vec
+                            .iter()
                             .filter(|t| **t != schemars::schema::InstanceType::Null)
                             .collect();
-                        let has_null = vec.iter().any(|t| *t == schemars::schema::InstanceType::Null);
+                        let has_null = vec.contains(&schemars::schema::InstanceType::Null);
                         let tn = if let Some(first) = non_null.first() {
                             format_instance_type(first)
                         } else {
@@ -716,9 +822,19 @@ fn property_from_schemars_schema(
                         if has_null {
                             return Property {
                                 type_name: tn,
-                                format: None, min_length: None, max_length: None,
-                                minimum: None, maximum: None, pattern: None, min_items: None,
-                                description: None, ref_path: None, items: None, nullable: true, example: None, additional_properties: None,
+                                format: None,
+                                min_length: None,
+                                max_length: None,
+                                minimum: None,
+                                maximum: None,
+                                pattern: None,
+                                min_items: None,
+                                description: None,
+                                ref_path: None,
+                                items: None,
+                                nullable: true,
+                                example: None,
+                                additional_properties: None,
                             };
                         }
                         tn
@@ -732,7 +848,8 @@ fn property_from_schemars_schema(
                         // This is an inline enum - check if it matches a registered schema
                         // Try to find the type name from definitions
                         // For now, check all registered schemas for matching enum values
-                        let enum_strs: Vec<String> = enum_values.iter()
+                        let enum_strs: Vec<String> = enum_values
+                            .iter()
                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
                             .collect();
                         for info in inventory::iter::<crate::SchemaInfo> {
@@ -741,11 +858,22 @@ fn property_from_schemars_schema(
                                 if *schema_enums == enum_strs {
                                     return Property {
                                         type_name: "string".to_string(),
-                                        format: None, min_length: None, max_length: None,
-                                        minimum: None, maximum: None, pattern: None, min_items: None,
+                                        format: None,
+                                        min_length: None,
+                                        max_length: None,
+                                        minimum: None,
+                                        maximum: None,
+                                        pattern: None,
+                                        min_items: None,
                                         description: None,
-                                        ref_path: Some(format!("#/components/schemas/{}", info.name)),
-                                        items: None, nullable: false, example: None, additional_properties: None,
+                                        ref_path: Some(format!(
+                                            "#/components/schemas/{}",
+                                            info.name
+                                        )),
+                                        items: None,
+                                        nullable: false,
+                                        example: None,
+                                        additional_properties: None,
                                     };
                                 }
                             }
@@ -760,9 +888,18 @@ fn property_from_schemars_schema(
                             let ap_prop = property_from_schemars_schema(ap_schema, definitions);
                             return Property {
                                 type_name: "object".to_string(),
-                                format: None, min_length: None, max_length: None,
-                                minimum: None, maximum: None, pattern: None, min_items: None,
-                                description: None, ref_path: None, items: None, nullable: false, example: None,
+                                format: None,
+                                min_length: None,
+                                max_length: None,
+                                minimum: None,
+                                maximum: None,
+                                pattern: None,
+                                min_items: None,
+                                description: None,
+                                ref_path: None,
+                                items: None,
+                                nullable: false,
+                                example: None,
                                 additional_properties: Some(Box::new(ap_prop)),
                             };
                         }
@@ -771,8 +908,12 @@ fn property_from_schemars_schema(
 
                 if type_name == "array" {
                     let items_prop = if let Some(arr) = &obj.array {
-                        if let Some(schemars::schema::SingleOrVec::Single(item_schema)) = &arr.items {
-                            Some(Box::new(property_from_schemars_schema(item_schema, definitions)))
+                        if let Some(schemars::schema::SingleOrVec::Single(item_schema)) = &arr.items
+                        {
+                            Some(Box::new(property_from_schemars_schema(
+                                item_schema,
+                                definitions,
+                            )))
                         } else {
                             None
                         }
@@ -781,31 +922,73 @@ fn property_from_schemars_schema(
                     };
 
                     return Property {
-                        type_name, format: None, min_length: None, max_length: None,
-                        minimum: None, maximum: None, pattern: None, min_items: None,
-                        description: None, ref_path: None, items: items_prop, nullable: false, example: None, additional_properties: None,
+                        type_name,
+                        format: None,
+                        min_length: None,
+                        max_length: None,
+                        minimum: None,
+                        maximum: None,
+                        pattern: None,
+                        min_items: None,
+                        description: None,
+                        ref_path: None,
+                        items: items_prop,
+                        nullable: false,
+                        example: None,
+                        additional_properties: None,
                     };
                 }
 
                 return Property {
-                    type_name, format: None, min_length: None, max_length: None,
-                    minimum: None, maximum: None, pattern: None, min_items: None,
-                    description: None, ref_path: None, items: None, nullable: false, example: None, additional_properties: None,
+                    type_name,
+                    format: None,
+                    min_length: None,
+                    max_length: None,
+                    minimum: None,
+                    maximum: None,
+                    pattern: None,
+                    min_items: None,
+                    description: None,
+                    ref_path: None,
+                    items: None,
+                    nullable: false,
+                    example: None,
+                    additional_properties: None,
                 };
             }
 
             Property {
                 type_name: "string".to_string(),
-                format: None, min_length: None, max_length: None,
-                minimum: None, maximum: None, pattern: None, min_items: None,
-                description: None, ref_path: None, items: None, nullable: false, example: None, additional_properties: None,
+                format: None,
+                min_length: None,
+                max_length: None,
+                minimum: None,
+                maximum: None,
+                pattern: None,
+                min_items: None,
+                description: None,
+                ref_path: None,
+                items: None,
+                nullable: false,
+                example: None,
+                additional_properties: None,
             }
         }
         _ => Property {
             type_name: "string".to_string(),
-            format: None, min_length: None, max_length: None,
-            minimum: None, maximum: None, pattern: None, min_items: None,
-            description: None, ref_path: None, items: None, nullable: false, example: None, additional_properties: None,
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: None,
+            ref_path: None,
+            items: None,
+            nullable: false,
+            example: None,
+            additional_properties: None,
         },
     }
 }

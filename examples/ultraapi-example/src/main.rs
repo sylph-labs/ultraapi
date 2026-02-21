@@ -1,7 +1,7 @@
-use ultraapi::prelude::*;
-use ultraapi::serde::Deserialize;
-use ultraapi::schemars::JsonSchema;
 use std::collections::HashMap;
+use ultraapi::prelude::*;
+use ultraapi::schemars::JsonSchema;
+use ultraapi::serde::Deserialize;
 
 /// A user in the system
 #[api_model]
@@ -115,7 +115,8 @@ impl Database {
 /// Get a user by ID
 #[get("/{id}")]
 async fn get_user(id: i64, db: Dep<Database>) -> Result<User, ApiError> {
-    db.get_user(id).await
+    db.get_user(id)
+        .await
         .ok_or_else(|| ApiError::not_found(format!("User {} not found", id)))
 }
 

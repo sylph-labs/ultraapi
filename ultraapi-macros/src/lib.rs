@@ -1,6 +1,9 @@
 use proc_macro::TokenStream;
-use quote::{quote, format_ident};
-use syn::{parse_macro_input, parse::Parser, ItemFn, ItemStruct, ItemEnum, FnArg, PatType, Type, PathSegment, LitStr, LitInt, Path};
+use quote::{format_ident, quote};
+use syn::{
+    parse::Parser, parse_macro_input, FnArg, ItemEnum, ItemFn, ItemStruct, LitInt, LitStr, PatType,
+    Path, PathSegment, Type,
+};
 
 fn extract_inner_type(seg: &PathSegment) -> Option<&Type> {
     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
@@ -79,7 +82,22 @@ fn get_vec_inner_type_name(ty: &Type) -> Option<String> {
 
 fn is_primitive_type(ty: &Type) -> bool {
     let name = get_type_name(ty);
-    matches!(name.as_str(), "i8"|"i16"|"i32"|"i64"|"i128"|"u8"|"u16"|"u32"|"u64"|"u128"|"f32"|"f64"|"String"|"bool")
+    matches!(
+        name.as_str(),
+        "i8" | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "f32"
+            | "f64"
+            | "String"
+            | "bool"
+    )
 }
 
 /// Extract doc comment string from attributes
@@ -88,7 +106,11 @@ fn extract_doc_comment(attrs: &[syn::Attribute]) -> String {
     for attr in attrs {
         if attr.path().is_ident("doc") {
             if let syn::Meta::NameValue(nv) = &attr.meta {
-                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                if let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) = &nv.value
+                {
                     lines.push(s.value().trim().to_string());
                 }
             }
@@ -134,9 +156,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                     security_schemes.push(lit.value());
                 }
             }
-        } else if !attr.path().is_ident("doc") {
-            clean_attrs.push(attr);
         } else {
+            // Not doc, not status/tag/security - keep it (e.g. serde, schemars)
             clean_attrs.push(attr);
         }
     }
@@ -149,9 +170,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     };
     let success_status = status_code.unwrap_or(default_status);
 
-    let path_params: Vec<String> = path.split('/')
+    let path_params: Vec<String> = path
+        .split('/')
         .filter(|s| s.starts_with('{') && s.ends_with('}'))
-        .map(|s| s[1..s.len()-1].to_string())
+        .map(|s| s[1..s.len() - 1].to_string())
         .collect();
 
     let axum_path = path.clone();
@@ -160,7 +182,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let wrapper_name = format_ident!("__{}_axum_handler", fn_name);
     let route_info_name = format_ident!("__{}_route_info", fn_name);
     let route_ref_name = format_ident!("__ULTRAAPI_ROUTE_{}", fn_name.to_string().to_uppercase());
-    let hayai_route_ref_name = format_ident!("__HAYAI_ROUTE_{}", fn_name.to_string().to_uppercase());
+    let hayai_route_ref_name =
+        format_ident!("__HAYAI_ROUTE_{}", fn_name.to_string().to_uppercase());
 
     let mut dep_extractions = Vec::new();
     let mut call_args = Vec::new();
@@ -168,7 +191,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let mut body_type: Option<&Type> = None;
     let mut path_param_types: Vec<(&syn::Ident, &Type)> = Vec::new();
     let mut query_type: Option<&Type> = None;
-    let mut query_extraction = quote!{};
+    let mut query_extraction = quote! {};
 
     for arg in &input_fn.sig.inputs {
         if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
@@ -230,20 +253,31 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     };
 
     // Detect Result<T, ApiError> return type
-    let is_result_return = return_type.map(|t| get_result_ok_type(t).is_some()).unwrap_or(false);
-    let effective_return_type = return_type.and_then(|t| get_result_ok_type(t)).or(return_type);
+    let is_result_return = return_type
+        .map(|t| get_result_ok_type(t).is_some())
+        .unwrap_or(false);
+    let effective_return_type = return_type
+        .and_then(|t| get_result_ok_type(t))
+        .or(return_type);
 
-    let return_type_name = effective_return_type.map(|t| get_type_name(t)).unwrap_or_else(|| "()".to_string());
+    let return_type_name = effective_return_type
+        .map(get_type_name)
+        .unwrap_or_else(|| "()".to_string());
 
     // Detect Vec<T> return type for array schema (check effective type, i.e. inside Result if applicable)
-    let is_vec_response = effective_return_type.map(|t| get_vec_inner_type_name(t).is_some()).unwrap_or(false);
-    let vec_inner_type_name = effective_return_type.and_then(|t| get_vec_inner_type_name(t)).unwrap_or_default();
+    let is_vec_response = effective_return_type
+        .map(|t| get_vec_inner_type_name(t).is_some())
+        .unwrap_or(false);
+    let vec_inner_type_name = effective_return_type
+        .and_then(get_vec_inner_type_name)
+        .unwrap_or_default();
 
     let path_extraction = if !path_param_types.is_empty() {
-        let names: Vec<_> = path_param_types.iter().map(|(n,_)| *n).collect();
-        let types: Vec<_> = path_param_types.iter().map(|(_,t)| *t).collect();
+        let names: Vec<_> = path_param_types.iter().map(|(n, _)| *n).collect();
+        let types: Vec<_> = path_param_types.iter().map(|(_, t)| *t).collect();
         if path_param_types.len() == 1 {
-            let n = names[0]; let t = types[0];
+            let n = names[0];
+            let t = types[0];
             quote! {
                 let ultraapi::axum::extract::Path(#n): ultraapi::axum::extract::Path<#t> =
                     ultraapi::axum::extract::Path::from_request_parts(&mut parts, &state).await
@@ -257,20 +291,27 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             }
         }
     } else {
-        quote!{}
+        quote! {}
     };
 
     let body_extraction = if has_body {
         let bty = body_type.unwrap();
-        let bpat = input_fn.sig.inputs.iter().find_map(|arg| {
-            if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
-                if !is_dep_type(ty) && !is_primitive_type(ty) && !is_query_type(ty) {
-                    let n = quote!(#pat).to_string();
-                    if !path_params.contains(&n) { return Some(pat.clone()); }
+        let bpat = input_fn
+            .sig
+            .inputs
+            .iter()
+            .find_map(|arg| {
+                if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
+                    if !is_dep_type(ty) && !is_primitive_type(ty) && !is_query_type(ty) {
+                        let n = quote!(#pat).to_string();
+                        if !path_params.contains(&n) {
+                            return Some(pat.clone());
+                        }
+                    }
                 }
-            }
-            None
-        }).unwrap();
+                None
+            })
+            .unwrap();
         quote! {
             let ultraapi::axum::Json(#bpat): ultraapi::axum::Json<#bty> =
                 ultraapi::axum::Json::from_request(req, &state).await
@@ -317,33 +358,38 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         }
     };
 
-    let path_param_schemas: Vec<_> = path_params.iter().map(|p| {
-        // Find the type of this path param
-        let openapi_type = path_param_types.iter()
-            .find(|(name, _)| name.to_string() == *p)
-            .map(|(_, ty)| {
-                let type_name = get_type_name(ty);
-                match type_name.as_str() {
-                    "i8"|"i16"|"i32"|"i64"|"i128"|"u8"|"u16"|"u32"|"u64"|"u128" => "integer",
-                    "f32"|"f64" => "number",
-                    "String" => "string",
-                    "bool" => "boolean",
-                    _ => "string",
+    let path_param_schemas: Vec<_> = path_params
+        .iter()
+        .map(|p| {
+            // Find the type of this path param
+            let openapi_type = path_param_types
+                .iter()
+                .find(|(name, _)| name.to_string() == *p)
+                .map(|(_, ty)| {
+                    let type_name = get_type_name(ty);
+                    match type_name.as_str() {
+                        "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64"
+                        | "u128" => "integer",
+                        "f32" | "f64" => "number",
+                        "String" => "string",
+                        "bool" => "boolean",
+                        _ => "string",
+                    }
+                })
+                .unwrap_or("string");
+            quote! {
+                ultraapi::openapi::Parameter {
+                    name: #p,
+                    location: "path",
+                    required: true,
+                    schema: ultraapi::openapi::SchemaObject::new_type(#openapi_type),
+                    description: None,
                 }
-            })
-            .unwrap_or("string");
-        quote! {
-            ultraapi::openapi::Parameter {
-                name: #p,
-                location: "path",
-                required: true,
-                schema: ultraapi::openapi::SchemaObject::new_type(#openapi_type),
-                description: None,
             }
-        }
-    }).collect();
+        })
+        .collect();
 
-    let body_type_name = body_type.map(|t| get_type_name(t)).unwrap_or_default();
+    let body_type_name = body_type.map(get_type_name).unwrap_or_default();
     let fn_name_str = fn_name.to_string();
 
     let query_params_fn_expr = if let Some(qt) = query_type {
@@ -450,9 +496,9 @@ pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
                 if nested.path.is_ident("custom") {
                     let value = nested.value()?;
                     let lit: LitStr = value.parse()?;
-                    let parsed_path = lit
-                        .parse::<Path>()
-                        .map_err(|_| nested.error("custom validator must be a valid path string"))?;
+                    let parsed_path = lit.parse::<Path>().map_err(|_| {
+                        nested.error("custom validator must be a valid path string")
+                    })?;
                     custom_validation_fn = Some(parsed_path);
                 }
                 Ok(())
@@ -471,9 +517,12 @@ pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else if let Ok(input) = syn::parse::<ItemEnum>(item_clone) {
         api_model_enum(input)
     } else {
-        syn::Error::new(proc_macro2::Span::call_site(), "api_model only supports structs and enums")
-            .to_compile_error()
-            .into()
+        syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "api_model only supports structs and enums",
+        )
+        .to_compile_error()
+        .into()
     }
 }
 
@@ -484,9 +533,7 @@ fn api_model_enum(input: ItemEnum) -> TokenStream {
     let variants = &input.variants;
     let description = extract_doc_comment(attrs);
 
-    let variant_names: Vec<String> = variants.iter()
-        .map(|v| v.ident.to_string())
-        .collect();
+    let variant_names: Vec<String> = variants.iter().map(|v| v.ident.to_string()).collect();
 
     let name_str = name.to_string();
 
@@ -547,9 +594,14 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
 
     let fields = match &input.fields {
         syn::Fields::Named(fields) => &fields.named,
-        _ => return syn::Error::new_spanned(&input, "api_model only supports structs with named fields")
+        _ => {
+            return syn::Error::new_spanned(
+                &input,
+                "api_model only supports structs with named fields",
+            )
             .to_compile_error()
-            .into(),
+            .into()
+        }
     };
 
     let mut validation_checks = Vec::new();
@@ -711,7 +763,9 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         }
 
         let mut clean_field = field.clone();
-        clean_field.attrs.retain(|a| !a.path().is_ident("validate") && !a.path().is_ident("schema"));
+        clean_field
+            .attrs
+            .retain(|a| !a.path().is_ident("validate") && !a.path().is_ident("schema"));
         clean_fields.push(clean_field);
     }
 
