@@ -1,5 +1,5 @@
-use hayai::prelude::*;
-use hayai::openapi;
+use ultraapi::prelude::*;
+use ultraapi::openapi;
 use std::collections::HashMap;
 
 #[api_model]
@@ -81,7 +81,7 @@ fn test_validation_multiple_errors() {
 
 #[test]
 fn test_schema_generation() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let test_user_schema = schemas.iter().find(|s| s.name == "CreateTestUser");
     assert!(test_user_schema.is_some());
     let schema = (test_user_schema.unwrap().schema_fn)();
@@ -115,7 +115,7 @@ struct UserWithAddress {
 
 #[test]
 fn test_nested_struct_ref() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "UserWithAddress").unwrap();
     let schema = (info.schema_fn)();
     let addr_prop = &schema.properties["address"];
@@ -125,7 +125,7 @@ fn test_nested_struct_ref() {
 
 #[test]
 fn test_vec_string_schema() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "UserWithAddress").unwrap();
     let schema = (info.schema_fn)();
     let tags_prop = &schema.properties["tags"];
@@ -136,7 +136,7 @@ fn test_vec_string_schema() {
 
 #[test]
 fn test_option_nullable() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "UserWithAddress").unwrap();
     let schema = (info.schema_fn)();
     let nick_prop = &schema.properties["nickname"];
@@ -147,7 +147,7 @@ fn test_option_nullable() {
 #[test]
 fn test_option_not_required() {
     // Issue #8: Option<T> fields should NOT be in required array
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "UserWithAddress").unwrap();
     let schema = (info.schema_fn)();
     assert!(!schema.required.contains(&"nickname".to_string()), "Option<T> field should not be required");
@@ -158,7 +158,7 @@ fn test_option_not_required() {
 
 #[test]
 fn test_nested_definitions_collected() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "UserWithAddress").unwrap();
     let nested = (info.nested_fn)();
     assert!(nested.contains_key("Address"));
@@ -169,7 +169,7 @@ fn test_nested_definitions_collected() {
 
 #[test]
 fn test_nested_json_serialization() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "UserWithAddress").unwrap();
     let schema = (info.schema_fn)();
     let json = schema.to_json_value();
@@ -193,7 +193,7 @@ async fn test_get_route(id: i64, _db: Dep<MockDb>) -> TestUser {
 
 #[test]
 fn test_route_info_registered() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "test_get_route");
     assert!(found.is_some());
     let info = found.unwrap();
@@ -208,7 +208,7 @@ fn test_route_info_registered() {
 
 #[test]
 fn test_app_builder() {
-    let _app = HayaiApp::new()
+    let _app = UltraApiApp::new()
         .title("Test API")
         .version("0.1.0")
         .dep(MockDb);
@@ -218,7 +218,7 @@ fn test_app_builder() {
 
 #[test]
 fn test_api_error_serialization() {
-    let err = hayai::ApiError::validation_error(vec!["field: bad".into()]);
+    let err = ultraapi::ApiError::validation_error(vec!["field: bad".into()]);
     let json = serde_json::to_value(&err).unwrap();
     assert_eq!(json["error"], "Validation failed");
     assert_eq!(json["details"][0], "field: bad");
@@ -226,7 +226,7 @@ fn test_api_error_serialization() {
 
 #[test]
 fn test_api_error_bad_request() {
-    let err = hayai::ApiError::bad_request("oops".into());
+    let err = ultraapi::ApiError::bad_request("oops".into());
     assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
 }
 
@@ -243,7 +243,7 @@ enum TaskStatus {
 
 #[test]
 fn test_enum_schema() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "TaskStatus").unwrap();
     let schema = (info.schema_fn)();
     assert_eq!(schema.type_name, "string");
@@ -253,7 +253,7 @@ fn test_enum_schema() {
 
 #[test]
 fn test_enum_json_serialization() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "TaskStatus").unwrap();
     let schema = (info.schema_fn)();
     let json = schema.to_json_value();
@@ -265,7 +265,7 @@ fn test_enum_json_serialization() {
 
 #[test]
 fn test_enum_description() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "TaskStatus").unwrap();
     let schema = (info.schema_fn)();
     assert_eq!(schema.description.as_deref(), Some("Task status"));
@@ -280,9 +280,9 @@ fn test_enum_validate() {
 #[test]
 fn test_enum_serde_roundtrip() {
     let status = TaskStatus::Active;
-    let json = hayai::serde_json::to_string(&status).unwrap();
+    let json = ultraapi::serde_json::to_string(&status).unwrap();
     assert_eq!(json, r#""Active""#);
-    let parsed: TaskStatus = hayai::serde_json::from_str(&json).unwrap();
+    let parsed: TaskStatus = ultraapi::serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, TaskStatus::Active);
 }
 
@@ -300,7 +300,7 @@ struct DocumentedModel {
 
 #[test]
 fn test_struct_description() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "DocumentedModel").unwrap();
     let schema = (info.schema_fn)();
     assert_eq!(schema.description.as_deref(), Some("A documented struct"));
@@ -308,7 +308,7 @@ fn test_struct_description() {
 
 #[test]
 fn test_field_description() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "DocumentedModel").unwrap();
     let schema = (info.schema_fn)();
     assert_eq!(schema.properties["id"].description.as_deref(), Some("The unique identifier"));
@@ -357,7 +357,7 @@ fn test_numeric_valid() {
 
 #[test]
 fn test_numeric_schema_constraints() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "NumericModel").unwrap();
     let schema = (info.schema_fn)();
     assert_eq!(schema.properties["quantity"].minimum, Some(1.0));
@@ -368,7 +368,7 @@ fn test_numeric_schema_constraints() {
 
 #[test]
 fn test_numeric_schema_json() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "NumericModel").unwrap();
     let schema = (info.schema_fn)();
     let json = schema.to_json_value();
@@ -390,7 +390,7 @@ async fn create_item_route(_body: NumericModel, _db: Dep<MockDb>) -> TestUser {
 
 #[test]
 fn test_route_status_code() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "create_item_route");
     assert!(found.is_some());
     let info = found.unwrap();
@@ -399,7 +399,7 @@ fn test_route_status_code() {
 
 #[test]
 fn test_route_tags() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "create_item_route");
     let info = found.unwrap();
     assert_eq!(info.tags, &["items"]);
@@ -407,7 +407,7 @@ fn test_route_tags() {
 
 #[test]
 fn test_route_description() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "create_item_route");
     let info = found.unwrap();
     assert_eq!(info.description, "A tagged and status-coded route");
@@ -428,21 +428,21 @@ async fn default_delete_route(id: i64) -> () {
 
 #[test]
 fn test_default_get_status() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "default_get_route").unwrap();
     assert_eq!(found.success_status, 200);
 }
 
 #[test]
 fn test_default_delete_status() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "default_delete_route").unwrap();
     assert_eq!(found.success_status, 204);
 }
 
 // ---- Issue #1: Query Parameters ----
 
-#[derive(hayai::serde::Deserialize, hayai::schemars::JsonSchema)]
+#[derive(ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
 #[allow(dead_code)]
 struct TestPagination {
     page: Option<i64>,
@@ -456,7 +456,7 @@ async fn query_test_route(query: Query<TestPagination>) -> TestUser {
 
 #[test]
 fn test_query_params_fn_registered() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "query_test_route").unwrap();
     assert!(found.query_params_fn.is_some());
     let params = (found.query_params_fn.unwrap())();
@@ -491,7 +491,7 @@ async fn vec_test_route() -> Vec<TestUser> {
 
 #[test]
 fn test_vec_response_route_info() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "vec_test_route").unwrap();
     assert!(found.is_vec_response);
     assert_eq!(found.vec_inner_type_name, "TestUser");
@@ -515,7 +515,7 @@ struct ModelWithEnum {
 
 #[test]
 fn test_enum_field_ref() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "ModelWithEnum").unwrap();
     let schema = (info.schema_fn)();
     let status_prop = &schema.properties["status"];
@@ -527,7 +527,7 @@ fn test_enum_field_ref() {
 
 #[test]
 fn test_server_builder() {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Test")
         .server("http://localhost:3000")
         .server("https://api.example.com");
@@ -559,7 +559,7 @@ struct ModelWithExample {
 
 #[test]
 fn test_example_on_field() {
-    let schemas: Vec<_> = inventory::iter::<hayai::SchemaInfo>().collect();
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
     let info = schemas.iter().find(|s| s.name == "ModelWithExample").unwrap();
     let schema = (info.schema_fn)();
     let email_prop = &schema.properties["email"];
@@ -578,14 +578,14 @@ async fn secure_test_route() -> TestUser {
 
 #[test]
 fn test_security_attribute() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "secure_test_route").unwrap();
     assert_eq!(found.security, &["bearer"]);
 }
 
 #[test]
 fn test_bearer_auth_builder() {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Test")
         .bearer_auth();
     let _ = app;
@@ -595,7 +595,7 @@ fn test_bearer_auth_builder() {
 
 #[test]
 fn test_swagger_mode_embedded_default() {
-    let app = HayaiApp::new().title("Test");
+    let app = UltraApiApp::new().title("Test");
     let router = app.into_router();
     // Just verify it builds without panic (embedded mode is default)
     let _ = router;
@@ -603,7 +603,7 @@ fn test_swagger_mode_embedded_default() {
 
 #[test]
 fn test_swagger_mode_cdn() {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Test")
         .swagger_cdn("https://custom-cdn.example.com/swagger-ui");
     let router = app.into_router();
@@ -612,14 +612,14 @@ fn test_swagger_mode_cdn() {
 
 #[test]
 fn test_swagger_mode_builder() {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Test")
-        .swagger_mode(hayai::SwaggerMode::Embedded);
+        .swagger_mode(ultraapi::SwaggerMode::Embedded);
     let _ = app.into_router();
 
-    let app2 = HayaiApp::new()
+    let app2 = UltraApiApp::new()
         .title("Test")
-        .swagger_mode(hayai::SwaggerMode::Cdn("https://example.com".into()));
+        .swagger_mode(ultraapi::SwaggerMode::Cdn("https://example.com".into()));
     let _ = app2.into_router();
 }
 
@@ -627,7 +627,7 @@ fn test_swagger_mode_builder() {
 
 #[test]
 fn test_info_description() {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Test API")
         .version("1.0.0")
         .description("A test API description");
@@ -659,7 +659,7 @@ fn test_openapi_spec_description_in_json() {
 
 #[test]
 fn test_info_contact_license() {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Test API")
         .contact("Author", "author@example.com", "https://example.com")
         .license("MIT", "https://opensource.org/licenses/MIT");
@@ -698,7 +698,7 @@ fn test_openapi_spec_contact_license_in_json() {
 
 // ---- Issue #4: Query param constraints ----
 
-#[derive(hayai::serde::Deserialize, hayai::schemars::JsonSchema)]
+#[derive(ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
 #[allow(dead_code)]
 struct ConstrainedQuery {
     /// Page number
@@ -711,7 +711,7 @@ struct ConstrainedQuery {
 
 #[test]
 fn test_query_param_constraints_propagation() {
-    let root = hayai::schemars::schema_for!(ConstrainedQuery);
+    let root = ultraapi::schemars::schema_for!(ConstrainedQuery);
     let params = openapi::query_params_from_schema(&root);
 
     let page_param = params.iter().find(|p| p.name == "page").unwrap();
@@ -725,7 +725,7 @@ fn test_query_param_constraints_propagation() {
 
 #[test]
 fn test_query_param_constraints_in_serialized_output() {
-    let root = hayai::schemars::schema_for!(ConstrainedQuery);
+    let root = ultraapi::schemars::schema_for!(ConstrainedQuery);
     let params = openapi::query_params_from_schema(&root);
 
     let page_param = params.iter().find(|p| p.name == "page").unwrap();
@@ -745,7 +745,7 @@ struct WithHashMap {
 
 #[test]
 fn test_hashmap_additional_properties() {
-    let root = hayai::schemars::schema_for!(WithHashMap);
+    let root = ultraapi::schemars::schema_for!(WithHashMap);
     let schema = openapi::schema_from_schemars("WithHashMap", &root);
 
     let meta_prop = schema.properties.get("metadata").unwrap();
@@ -757,7 +757,7 @@ fn test_hashmap_additional_properties() {
 
 #[test]
 fn test_hashmap_json_output() {
-    let root = hayai::schemars::schema_for!(WithHashMap);
+    let root = ultraapi::schemars::schema_for!(WithHashMap);
     let schema = openapi::schema_from_schemars("WithHashMap", &root);
     let json = schema.to_json_value();
 
@@ -766,7 +766,7 @@ fn test_hashmap_json_output() {
     assert_eq!(meta["additionalProperties"]["type"], "string");
 }
 
-use hayai::serde_json;
+use ultraapi::serde_json;
 
 // ===== Router tests =====
 
@@ -806,7 +806,7 @@ async fn rt_secured_route() -> RouterTestItem {
 
 #[test]
 fn test_router_prefix_prepended() {
-    let router = hayai::HayaiRouter::new("/api/items")
+    let router = ultraapi::UltraApiRouter::new("/api/items")
         .route(__HAYAI_ROUTE_RT_LIST_ITEMS)
         .route(__HAYAI_ROUTE_RT_GET_ITEM);
     let resolved = router.resolve("", &[], &[]);
@@ -817,9 +817,9 @@ fn test_router_prefix_prepended() {
 
 #[test]
 fn test_nested_router_prefix_concatenation() {
-    let inner = hayai::HayaiRouter::new("/items")
+    let inner = ultraapi::UltraApiRouter::new("/items")
         .route(__HAYAI_ROUTE_RT_LIST_ITEMS);
-    let outer = hayai::HayaiRouter::new("/api/v1")
+    let outer = ultraapi::UltraApiRouter::new("/api/v1")
         .include(inner);
     let resolved = outer.resolve("", &[], &[]);
     assert_eq!(resolved.len(), 1);
@@ -828,7 +828,7 @@ fn test_nested_router_prefix_concatenation() {
 
 #[test]
 fn test_router_tags_merged_with_route_tags() {
-    let router = hayai::HayaiRouter::new("/tagged")
+    let router = ultraapi::UltraApiRouter::new("/tagged")
         .tag("router-tag")
         .route(__HAYAI_ROUTE_RT_TAGGED_ROUTE);
     let resolved = router.resolve("", &[], &[]);
@@ -840,7 +840,7 @@ fn test_router_tags_merged_with_route_tags() {
 
 #[test]
 fn test_router_security_applied() {
-    let router = hayai::HayaiRouter::new("/secure")
+    let router = ultraapi::UltraApiRouter::new("/secure")
         .security("api_key")
         .route(__HAYAI_ROUTE_RT_SECURED_ROUTE);
     let resolved = router.resolve("", &[], &[]);
@@ -852,25 +852,25 @@ fn test_router_security_applied() {
 #[test]
 fn test_router_no_include_backward_compat() {
     // When no .include() is used, auto-discovery should work
-    let app = hayai::HayaiApp::new();
+    let app = ultraapi::UltraApiApp::new();
     assert!(!app.has_explicit_routes());
 }
 
 #[test]
 fn test_router_with_include_is_explicit() {
-    let router = hayai::HayaiRouter::new("/items")
+    let router = ultraapi::UltraApiRouter::new("/items")
         .route(__HAYAI_ROUTE_RT_LIST_ITEMS);
-    let app = hayai::HayaiApp::new().include(router);
+    let app = ultraapi::UltraApiApp::new().include(router);
     assert!(app.has_explicit_routes());
 }
 
 #[test]
 fn test_deeply_nested_routers() {
-    let items = hayai::HayaiRouter::new("/items")
+    let items = ultraapi::UltraApiRouter::new("/items")
         .route(__HAYAI_ROUTE_RT_GET_ITEM);
-    let v1 = hayai::HayaiRouter::new("/v1")
+    let v1 = ultraapi::UltraApiRouter::new("/v1")
         .include(items);
-    let api = hayai::HayaiRouter::new("/api")
+    let api = ultraapi::UltraApiRouter::new("/api")
         .include(v1);
     let resolved = api.resolve("", &[], &[]);
     assert_eq!(resolved.len(), 1);
@@ -879,9 +879,9 @@ fn test_deeply_nested_routers() {
 
 #[test]
 fn test_router_tags_security_propagate_through_nesting() {
-    let inner = hayai::HayaiRouter::new("/items")
+    let inner = ultraapi::UltraApiRouter::new("/items")
         .route(__HAYAI_ROUTE_RT_LIST_ITEMS);
-    let outer = hayai::HayaiRouter::new("/api")
+    let outer = ultraapi::UltraApiRouter::new("/api")
         .tag("api")
         .security("bearer")
         .include(inner);
@@ -894,11 +894,11 @@ fn test_router_tags_security_propagate_through_nesting() {
 
 #[test]
 fn test_router_openapi_spec_prefixed_paths() {
-    let router = hayai::HayaiRouter::new("/api/items")
+    let router = ultraapi::UltraApiRouter::new("/api/items")
         .tag("items")
         .route(__HAYAI_ROUTE_RT_LIST_ITEMS)
         .route(__HAYAI_ROUTE_RT_GET_ITEM);
-    let app = hayai::HayaiApp::new()
+    let app = ultraapi::UltraApiApp::new()
         .include(router);
     let _router_axum = app.into_router();
     // The router was built — if it compiled and didn't panic, the paths are registered
@@ -907,11 +907,11 @@ fn test_router_openapi_spec_prefixed_paths() {
 
 #[test]
 fn test_multiple_routers_on_app() {
-    let items = hayai::HayaiRouter::new("/items")
+    let items = ultraapi::UltraApiRouter::new("/items")
         .route(__HAYAI_ROUTE_RT_LIST_ITEMS);
-    let secure = hayai::HayaiRouter::new("/secure")
+    let secure = ultraapi::UltraApiRouter::new("/secure")
         .route(__HAYAI_ROUTE_RT_SECURED_ROUTE);
-    let app = hayai::HayaiApp::new()
+    let app = ultraapi::UltraApiApp::new()
         .include(items)
         .include(secure);
     let resolved = app.resolve_routes();
@@ -925,16 +925,16 @@ fn test_multiple_routers_on_app() {
 #[tokio::test]
 async fn test_missing_dep_returns_500_not_panic() {
     // Build app WITHOUT registering MockDb, but with a route that needs it
-    let router = hayai::HayaiRouter::new("/test")
+    let router = ultraapi::UltraApiRouter::new("/test")
         .route(__HAYAI_ROUTE_TEST_GET_ROUTE);
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .include(router)
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        hayai::axum::serve(listener, app).await.unwrap();
+        ultraapi::axum::serve(listener, app).await.unwrap();
     });
 
     let resp = reqwest::get(format!("http://{}/test/test/42", addr)).await.unwrap();
@@ -952,7 +952,7 @@ async fn get_by_name(name: String) -> TestUser {
 
 #[test]
 fn test_string_path_param_type() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "get_by_name").unwrap();
     assert_eq!(found.parameters.len(), 1);
     assert_eq!(found.parameters[0].name, "name");
@@ -961,7 +961,7 @@ fn test_string_path_param_type() {
 
 #[test]
 fn test_integer_path_param_type() {
-    let found = inventory::iter::<&hayai::RouteInfo>()
+    let found = inventory::iter::<&ultraapi::RouteInfo>()
         .find(|r| r.handler_name == "test_get_route").unwrap();
     assert_eq!(found.parameters[0].schema.type_name, "integer");
 }
@@ -998,7 +998,7 @@ struct MockDbPool {
 #[test]
 fn test_override_dep_method_exists() {
     // Test that override_dep method exists and can be called
-    let app = hayai::HayaiApp::new()
+    let app = ultraapi::UltraApiApp::new()
         .override_dep(RealDbPool { connection_string: "test".into() });
     
     let _ = app;
@@ -1006,7 +1006,7 @@ fn test_override_dep_method_exists() {
 
 #[test]
 fn test_has_override_method() {
-    let app = hayai::HayaiApp::new()
+    let app = ultraapi::UltraApiApp::new()
         .override_dep(RealDbPool { connection_string: "test".into() });
     
     assert!(app.has_override::<RealDbPool>());
@@ -1015,7 +1015,7 @@ fn test_has_override_method() {
 
 #[test]
 fn test_clear_overrides_method() {
-    let app = hayai::HayaiApp::new()
+    let app = ultraapi::UltraApiApp::new()
         .override_dep(RealDbPool { connection_string: "test".into() })
         .clear_overrides();
     
@@ -1026,7 +1026,7 @@ fn test_clear_overrides_method() {
 #[test]
 fn test_override_multiple_deps() {
     // Can override multiple different types
-    let app = hayai::HayaiApp::new()
+    let app = ultraapi::UltraApiApp::new()
         .override_dep(RealDbPool { connection_string: "test".into() })
         .override_dep(MockDbPool { mock_data: vec![] });
     
@@ -1042,7 +1042,7 @@ fn test_integration_override_with_dep() {
     
     // Build app with real DB dependency, then override with test config
     // The override takes precedence
-    let _app = hayai::HayaiApp::new()
+    let _app = ultraapi::UltraApiApp::new()
         .dep(real_db)
         .override_dep(test_db);
     

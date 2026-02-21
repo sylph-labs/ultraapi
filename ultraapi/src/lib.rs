@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 // Re-exports
-pub use hayai_macros::{get, post, put, delete, api_model};
+pub use ultraapi_macros::{get, post, put, delete, api_model};
 pub use serde;
 pub use serde_json;
 pub use schemars;
@@ -19,7 +19,7 @@ pub use regex;
 
 pub mod prelude {
     pub use crate::{get, post, put, delete, api_model};
-    pub use crate::{HayaiApp, HayaiRouter, Dep, State, ApiError, Validate};
+    pub use crate::{UltraApiApp, UltraApiRouter, Dep, State, ApiError, Validate};
     pub use crate::axum::extract::Query;
 }
 
@@ -251,16 +251,16 @@ impl ResolvedRoute {
 }
 
 /// A FastAPI-style router with prefix, shared tags, security, deps, and nested routers
-pub struct HayaiRouter {
+pub struct UltraApiRouter {
     prefix: String,
     routes: Vec<&'static RouteInfo>,
     tags: Vec<String>,
     security: Vec<String>,
     deps: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
-    children: Vec<HayaiRouter>,
+    children: Vec<UltraApiRouter>,
 }
 
-impl HayaiRouter {
+impl UltraApiRouter {
     pub fn new(prefix: &str) -> Self {
         Self {
             prefix: prefix.to_string(),
@@ -292,7 +292,7 @@ impl HayaiRouter {
         self
     }
 
-    pub fn include(mut self, child: HayaiRouter) -> Self {
+    pub fn include(mut self, child: UltraApiRouter) -> Self {
         self.children.push(child);
         self
     }
@@ -353,7 +353,7 @@ pub enum SwaggerMode {
 }
 
 /// The main application struct
-pub struct HayaiApp {
+pub struct UltraApiApp {
     deps: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     /// Dependency overrides for testing - these take precedence over regular deps
     dep_overrides: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
@@ -365,10 +365,10 @@ pub struct HayaiApp {
     swagger_mode: SwaggerMode,
     servers: Vec<openapi::Server>,
     security_schemes: HashMap<String, openapi::SecurityScheme>,
-    routers: Vec<HayaiRouter>,
+    routers: Vec<UltraApiRouter>,
 }
 
-impl HayaiApp {
+impl UltraApiApp {
     pub fn new() -> Self {
         Self {
             deps: HashMap::new(),
@@ -435,12 +435,12 @@ impl HayaiApp {
     /// Override a dependency for testing.
     ///
     /// This allows replacing registered dependencies with mock values during testing.
-    /// Overrides take precedence over regular dependencies registered via [`dep()`](HayaiApp::dep).
+    /// Overrides take precedence over regular dependencies registered via [`dep()`](UltraApiApp::dep).
     ///
     /// # Example
     ///
     /// ```ignore
-    /// use hayai::{HayaiApp, Dep};
+    /// use ultraapi::{UltraApiApp, Dep};
     ///
     /// #[derive(Clone)]
     /// struct DatabasePool { /* ... */ }
@@ -457,7 +457,7 @@ impl HayaiApp {
     /// async fn test_with_mock_db() {
     ///     let mock_db = MockDatabase { data: vec!["test".into()] };
     ///
-    ///     let app = HayaiApp::new()
+    ///     let app = UltraApiApp::new()
     ///         .dep(DatabasePool { /* real config */ })
     ///         .override_dep(mock_db)
     ///         .route(get_items);
@@ -499,7 +499,7 @@ impl HayaiApp {
         })
     }
 
-    pub fn include(mut self, router: HayaiRouter) -> Self {
+    pub fn include(mut self, router: UltraApiRouter) -> Self {
         self.routers.push(router);
         self
     }
@@ -763,7 +763,7 @@ impl HayaiApp {
 
 impl openapi::OpenApiSpec {
     /// Enhanced to_json that includes dynamic query parameters
-    pub fn to_json_with_query_params(&self, routers: &[HayaiRouter]) -> serde_json::Value {
+    pub fn to_json_with_query_params(&self, routers: &[UltraApiRouter]) -> serde_json::Value {
         let mut val = self.to_json();
 
         // Build path mapping: for each route, determine the actual spec path
@@ -841,3 +841,9 @@ impl openapi::OpenApiSpec {
         val
     }
 }
+
+// Backward compatibility aliases (deprecated, use UltraApiApp and UltraApiRouter)
+#[allow(deprecated)]
+pub use UltraApiApp as HayaiApp;
+#[allow(deprecated)]
+pub use UltraApiRouter as HayaiRouter;

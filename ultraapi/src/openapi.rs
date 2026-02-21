@@ -254,6 +254,13 @@ pub struct ResponseDef {
     pub schema_ref: Option<serde_json::Value>,
 }
 
+/// Discriminator for oneOf schemas
+#[derive(Debug, Clone, Serialize)]
+pub struct Discriminator {
+    pub property_name: String,
+    pub mapping: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Schema {
     pub type_name: String,
@@ -262,6 +269,9 @@ pub struct Schema {
     pub description: Option<String>,
     pub enum_values: Option<Vec<String>>,
     pub example: Option<String>,
+    /// For discriminated unions (oneOf with discriminator)
+    pub one_of: Option<Vec<String>>,
+    pub discriminator: Option<Discriminator>,
 }
 
 impl Schema {
@@ -276,6 +286,25 @@ impl Schema {
                 obj["description"] = serde_json::Value::String(desc.clone());
             }
             return obj;
+        }
+
+        // Discriminated union (oneOf with discriminator)
+        if let (Some(one_of_refs), Some(discriminator)) = (&self.one_of, &self.discriminator) {
+            let one_of: Vec<serde_json::Value> = one_of_refs.iter()
+                .map(|r| serde_json::json!({ "$ref": r }))
+                .collect();
+            
+            let mapping: serde_json::Map<String, serde_json::Value> = discriminator.mapping.iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            
+            return serde_json::json!({
+                "oneOf": one_of,
+                "discriminator": {
+                    "propertyName": discriminator.property_name,
+                    "mapping": mapping,
+                }
+            });
         }
 
         let mut props = serde_json::Map::new();
@@ -459,6 +488,8 @@ pub fn schema_from_schemars_full(_name: &str, root: &schemars::schema::RootSchem
                     description: None,
                     enum_values: None,
                     example: None,
+                    one_of: None,
+                    discriminator: None,
                 });
             }
         }
@@ -472,6 +503,8 @@ pub fn schema_from_schemars_full(_name: &str, root: &schemars::schema::RootSchem
             description: None,
             enum_values: None,
             example: None,
+            one_of: None,
+            discriminator: None,
         },
         nested,
     }
@@ -624,6 +657,8 @@ pub fn api_error_schema() -> Schema {
         description: Some("Standard API error response".to_string()),
         enum_values: None,
         example: None,
+        one_of: None,
+        discriminator: None,
     }
 }
 

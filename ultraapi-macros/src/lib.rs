@@ -159,7 +159,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let method_ident = format_ident!("{}", method.to_lowercase());
     let wrapper_name = format_ident!("__{}_axum_handler", fn_name);
     let route_info_name = format_ident!("__{}_route_info", fn_name);
-    let route_ref_name = format_ident!("__HAYAI_ROUTE_{}", fn_name.to_string().to_uppercase());
+    let route_ref_name = format_ident!("__ULTRAAPI_ROUTE_{}", fn_name.to_string().to_uppercase());
+    let hayai_route_ref_name = format_ident!("__HAYAI_ROUTE_{}", fn_name.to_string().to_uppercase());
 
     let mut dep_extractions = Vec::new();
     let mut call_args = Vec::new();
@@ -177,7 +178,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                     if let Some(seg) = tp.path.segments.last() {
                         if let Some(inner) = extract_inner_type(seg) {
                             dep_extractions.push(quote! {
-                                let #pat: hayai::Dep<#inner> = hayai::Dep::from_app_state(&state)?;
+                                let #pat: ultraapi::Dep<#inner> = ultraapi::Dep::from_app_state(&state)?;
                             });
                             call_args.push(quote!(#pat));
                         }
@@ -188,7 +189,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                     if let Some(seg) = tp.path.segments.last() {
                         if let Some(inner) = extract_inner_type(seg) {
                             dep_extractions.push(quote! {
-                                let #pat: hayai::State<#inner> = hayai::State::from_app_state(&state)?;
+                                let #pat: ultraapi::State<#inner> = ultraapi::State::from_app_state(&state)?;
                             });
                             call_args.push(quote!(#pat));
                         }
@@ -200,9 +201,9 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         if let Some(inner) = extract_inner_type(seg) {
                             query_type = Some(inner);
                             query_extraction = quote! {
-                                let #pat: hayai::axum::extract::Query<#inner> =
-                                    hayai::axum::extract::Query::from_request_parts(&mut parts, &state).await
-                                    .map_err(|e| hayai::ApiError::bad_request(format!("Invalid query parameters: {}", e)))?;
+                                let #pat: ultraapi::axum::extract::Query<#inner> =
+                                    ultraapi::axum::extract::Query::from_request_parts(&mut parts, &state).await
+                                    .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid query parameters: {}", e)))?;
                             };
                             call_args.push(quote!(#pat));
                         }
@@ -244,15 +245,15 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         if path_param_types.len() == 1 {
             let n = names[0]; let t = types[0];
             quote! {
-                let hayai::axum::extract::Path(#n): hayai::axum::extract::Path<#t> =
-                    hayai::axum::extract::Path::from_request_parts(&mut parts, &state).await
-                    .map_err(|e| hayai::ApiError::bad_request(format!("Invalid path param: {}", e)))?;
+                let ultraapi::axum::extract::Path(#n): ultraapi::axum::extract::Path<#t> =
+                    ultraapi::axum::extract::Path::from_request_parts(&mut parts, &state).await
+                    .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid path param: {}", e)))?;
             }
         } else {
             quote! {
-                let hayai::axum::extract::Path((#(#names),*)): hayai::axum::extract::Path<(#(#types),*)> =
-                    hayai::axum::extract::Path::from_request_parts(&mut parts, &state).await
-                    .map_err(|e| hayai::ApiError::bad_request(format!("Invalid path params: {}", e)))?;
+                let ultraapi::axum::extract::Path((#(#names),*)): ultraapi::axum::extract::Path<(#(#types),*)> =
+                    ultraapi::axum::extract::Path::from_request_parts(&mut parts, &state).await
+                    .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid path params: {}", e)))?;
             }
         }
     } else {
@@ -271,10 +272,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             None
         }).unwrap();
         quote! {
-            let hayai::axum::Json(#bpat): hayai::axum::Json<#bty> =
-                hayai::axum::Json::from_request(req, &state).await
-                .map_err(|e| hayai::ApiError::bad_request(format!("Invalid body: {}", e)))?;
-            #bpat.validate().map_err(|e| hayai::ApiError::validation_error(e))?;
+            let ultraapi::axum::Json(#bpat): ultraapi::axum::Json<#bty> =
+                ultraapi::axum::Json::from_request(req, &state).await
+                .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid body: {}", e)))?;
+            #bpat.validate().map_err(|e| ultraapi::ApiError::validation_error(e))?;
         }
     } else {
         quote! { let _ = req; }
@@ -286,32 +287,32 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         if is_result_return {
             quote! {
                 let _ = #fn_name(#(#call_args),*).await?;
-                Ok((hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
+                Ok((ultraapi::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
             }
         } else {
             quote! {
                 let _ = #fn_name(#(#call_args),*).await;
-                Ok((hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
+                Ok((ultraapi::axum::http::StatusCode::from_u16(#status_lit).unwrap(),).into_response())
             }
         }
     } else if is_result_return {
         quote! {
             let result = #fn_name(#(#call_args),*).await?;
-            let value = hayai::serde_json::to_value(&result)
-                .map_err(|e| hayai::ApiError::internal(format!("Response serialization failed: {}", e)))?;
+            let value = ultraapi::serde_json::to_value(&result)
+                .map_err(|e| ultraapi::ApiError::internal(format!("Response serialization failed: {}", e)))?;
             Ok((
-                hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
-                hayai::axum::Json(value),
+                ultraapi::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
+                ultraapi::axum::Json(value),
             ).into_response())
         }
     } else {
         quote! {
             let result = #fn_name(#(#call_args),*).await;
-            let value = hayai::serde_json::to_value(&result)
-                .map_err(|e| hayai::ApiError::internal(format!("Response serialization failed: {}", e)))?;
+            let value = ultraapi::serde_json::to_value(&result)
+                .map_err(|e| ultraapi::ApiError::internal(format!("Response serialization failed: {}", e)))?;
             Ok((
-                hayai::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
-                hayai::axum::Json(value),
+                ultraapi::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
+                ultraapi::axum::Json(value),
             ).into_response())
         }
     };
@@ -332,11 +333,11 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             })
             .unwrap_or("string");
         quote! {
-            hayai::openapi::Parameter {
+            ultraapi::openapi::Parameter {
                 name: #p,
                 location: "path",
                 required: true,
-                schema: hayai::openapi::SchemaObject::new_type(#openapi_type),
+                schema: ultraapi::openapi::SchemaObject::new_type(#openapi_type),
                 description: None,
             }
         }
@@ -347,8 +348,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
 
     let query_params_fn_expr = if let Some(qt) = query_type {
         quote! { Some(|| {
-            let root = hayai::schemars::schema_for!(#qt);
-            hayai::openapi::query_params_from_schema(&root)
+            let root = ultraapi::schemars::schema_for!(#qt);
+            ultraapi::openapi::query_params_from_schema(&root)
         }) }
     } else {
         quote! { None }
@@ -360,14 +361,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
 
         #[doc(hidden)]
         async fn #wrapper_name(
-            hayai::axum::extract::State(state): hayai::axum::extract::State<hayai::AppState>,
-            mut parts: hayai::axum::http::request::Parts,
-            req: hayai::axum::http::Request<hayai::axum::body::Body>,
-        ) -> Result<hayai::axum::response::Response, hayai::ApiError> {
-            use hayai::axum::extract::FromRequest;
-            use hayai::axum::extract::FromRequestParts;
-            use hayai::axum::response::IntoResponse;
-            use hayai::Validate;
+            ultraapi::axum::extract::State(state): ultraapi::axum::extract::State<ultraapi::AppState>,
+            mut parts: ultraapi::axum::http::request::Parts,
+            req: ultraapi::axum::http::Request<ultraapi::axum::body::Body>,
+        ) -> Result<ultraapi::axum::response::Response, ultraapi::ApiError> {
+            use ultraapi::axum::extract::FromRequest;
+            use ultraapi::axum::extract::FromRequestParts;
+            use ultraapi::axum::response::IntoResponse;
+            use ultraapi::Validate;
 
             #path_extraction
             #query_extraction
@@ -379,7 +380,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
 
         #[doc(hidden)]
         #[allow(non_upper_case_globals)]
-        static #route_info_name: hayai::RouteInfo = hayai::RouteInfo {
+        static #route_info_name: ultraapi::RouteInfo = ultraapi::RouteInfo {
             path: #path,
             axum_path: #axum_path,
             method: #method_upper,
@@ -396,18 +397,23 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             tags: &[#(#tags),*],
             security: &[#(#security_schemes),*],
             query_params_fn: #query_params_fn_expr,
-            register_fn: |app: hayai::axum::Router<hayai::AppState>| {
-                app.route(#axum_path, hayai::axum::routing::#method_ident(#wrapper_name))
+            register_fn: |app: ultraapi::axum::Router<ultraapi::AppState>| {
+                app.route(#axum_path, ultraapi::axum::routing::#method_ident(#wrapper_name))
             },
             method_router_fn: || {
-                hayai::axum::routing::#method_ident(#wrapper_name)
+                ultraapi::axum::routing::#method_ident(#wrapper_name)
             },
         };
 
         #[doc(hidden)]
-        pub static #route_ref_name: &hayai::RouteInfo = &#route_info_name;
+        pub static #route_ref_name: &ultraapi::RouteInfo = &#route_info_name;
 
-        hayai::inventory::submit! { &#route_info_name }
+        // Backward compatibility alias (deprecated)
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        pub static #hayai_route_ref_name: &ultraapi::RouteInfo = &#route_info_name;
+
+        ultraapi::inventory::submit! { &#route_info_name }
     };
 
     output.into()
@@ -492,35 +498,37 @@ fn api_model_enum(input: ItemEnum) -> TokenStream {
 
     let output = quote! {
         #(#attrs)*
-        #[derive(hayai::serde::Serialize, hayai::serde::Deserialize, hayai::schemars::JsonSchema)]
-        #[serde(crate = "hayai::serde")]
-        #[schemars(crate = "hayai::schemars")]
+        #[derive(ultraapi::serde::Serialize, ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
+        #[serde(crate = "ultraapi::serde")]
+        #[schemars(crate = "ultraapi::schemars")]
         #vis enum #name {
             #variants
         }
 
-        impl hayai::Validate for #name {
+        impl ultraapi::Validate for #name {
             fn validate(&self) -> Result<(), Vec<String>> { Ok(()) }
         }
 
-        hayai::inventory::submit! {
-            hayai::SchemaInfo {
+        ultraapi::inventory::submit! {
+            ultraapi::SchemaInfo {
                 name: #name_str,
                 schema_fn: || {
-                    static CACHE: std::sync::OnceLock<hayai::openapi::Schema> = std::sync::OnceLock::new();
+                    static CACHE: std::sync::OnceLock<ultraapi::openapi::Schema> = std::sync::OnceLock::new();
                     CACHE.get_or_init(|| {
-                        hayai::openapi::Schema {
+                        ultraapi::openapi::Schema {
                             type_name: "string".to_string(),
                             properties: std::collections::HashMap::new(),
                             required: vec![],
                             description: #desc_expr,
                             enum_values: Some(vec![#(#variant_names.to_string()),*]),
                             example: None,
+                            one_of: None,
+                            discriminator: None,
                         }
                     }).clone()
                 },
                 nested_fn: || {
-                    static CACHE: std::sync::OnceLock<std::collections::HashMap<String, hayai::openapi::Schema>> = std::sync::OnceLock::new();
+                    static CACHE: std::sync::OnceLock<std::collections::HashMap<String, ultraapi::openapi::Schema>> = std::sync::OnceLock::new();
                     CACHE.get_or_init(|| std::collections::HashMap::new()).clone()
                 },
             }
@@ -656,8 +664,8 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2:
                         let pat = lit.value();
                         validation_checks.push(quote! {
                             {
-                                static RE: std::sync::OnceLock<hayai::regex::Regex> = std::sync::OnceLock::new();
-                                let re = RE.get_or_init(|| hayai::regex::Regex::new(#pat).expect("Invalid regex"));
+                                static RE: std::sync::OnceLock<ultraapi::regex::Regex> = std::sync::OnceLock::new();
+                                let re = RE.get_or_init(|| ultraapi::regex::Regex::new(#pat).expect("Invalid regex"));
                                 if !re.is_match(&self.#field_name) {
                                     errors.push(format!("{}: must match pattern {}", #field_name_str, #pat));
                                 }
@@ -717,14 +725,14 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2:
 
     let output = quote! {
         #(#attrs)*
-        #[derive(hayai::serde::Serialize, hayai::serde::Deserialize, hayai::schemars::JsonSchema)]
-        #[serde(crate = "hayai::serde")]
-        #[schemars(crate = "hayai::schemars")]
+        #[derive(ultraapi::serde::Serialize, ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
+        #[serde(crate = "ultraapi::serde")]
+        #[schemars(crate = "ultraapi::schemars")]
         #vis struct #name #generics {
             #(#clean_fields),*
         }
 
-        impl hayai::Validate for #name {
+        impl ultraapi::Validate for #name {
             fn validate(&self) -> Result<(), Vec<String>> {
                 let mut errors = Vec::new();
                 #(#validation_checks)*
@@ -732,27 +740,27 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2:
             }
         }
 
-        impl hayai::HasSchemaPatches for #name {
-            fn patch_schema(props: &mut std::collections::HashMap<String, hayai::openapi::PropertyPatch>) {
+        impl ultraapi::HasSchemaPatches for #name {
+            fn patch_schema(props: &mut std::collections::HashMap<String, ultraapi::openapi::PropertyPatch>) {
                 #(#schema_patches)*
             }
         }
 
-        hayai::inventory::submit! {
-            hayai::SchemaInfo {
+        ultraapi::inventory::submit! {
+            ultraapi::SchemaInfo {
                 name: #name_str,
                 schema_fn: || {
-                    static CACHE: std::sync::OnceLock<hayai::openapi::Schema> = std::sync::OnceLock::new();
+                    static CACHE: std::sync::OnceLock<ultraapi::openapi::Schema> = std::sync::OnceLock::new();
                     CACHE.get_or_init(|| {
-                        let base = hayai::schemars::schema_for!(#name);
-                        let result = hayai::openapi::schema_from_schemars_full(#name_str, &base);
+                        let base = ultraapi::schemars::schema_for!(#name);
+                        let result = ultraapi::openapi::schema_from_schemars_full(#name_str, &base);
                         let mut schema = result.schema;
                         schema.description = #desc_expr;
                         let mut patches = std::collections::HashMap::new();
                         for (name, _) in &schema.properties {
-                            patches.insert(name.clone(), hayai::openapi::PropertyPatch::default());
+                            patches.insert(name.clone(), ultraapi::openapi::PropertyPatch::default());
                         }
-                        <#name as hayai::HasSchemaPatches>::patch_schema(&mut patches);
+                        <#name as ultraapi::HasSchemaPatches>::patch_schema(&mut patches);
                         for (name, patch) in patches {
                             if let Some(prop) = schema.properties.get_mut(&name) {
                                 if patch.min_length.is_some() { prop.min_length = patch.min_length; }
@@ -770,10 +778,10 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2:
                     }).clone()
                 },
                 nested_fn: || {
-                    static CACHE: std::sync::OnceLock<std::collections::HashMap<String, hayai::openapi::Schema>> = std::sync::OnceLock::new();
+                    static CACHE: std::sync::OnceLock<std::collections::HashMap<String, ultraapi::openapi::Schema>> = std::sync::OnceLock::new();
                     CACHE.get_or_init(|| {
-                        let base = hayai::schemars::schema_for!(#name);
-                        let result = hayai::openapi::schema_from_schemars_full(#name_str, &base);
+                        let base = ultraapi::schemars::schema_for!(#name);
+                        let result = ultraapi::openapi::schema_from_schemars_full(#name_str, &base);
                         result.nested
                     }).clone()
                 },

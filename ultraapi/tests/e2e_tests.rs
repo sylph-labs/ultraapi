@@ -1,5 +1,5 @@
-use hayai::prelude::*;
-use hayai::axum;
+use ultraapi::prelude::*;
+use ultraapi::axum;
 use serde_json::Value;
 
 // --- App setup ---
@@ -37,7 +37,7 @@ struct UserWithAddress {
     nickname: Option<String>,
 }
 
-#[derive(hayai::serde::Deserialize, hayai::schemars::JsonSchema)]
+#[derive(ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
 struct Pagination {
     page: Option<i64>,
     limit: Option<i64>,
@@ -82,7 +82,7 @@ async fn list_users(query: Query<Pagination>, db: Dep<Database>) -> Vec<User> {
 // --- Helper ---
 
 async fn spawn_app() -> String {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Test API")
         .version("0.1.0")
         .dep(Database)
@@ -387,14 +387,14 @@ async fn e2e_delete_item(id: i64) -> () {
 }
 
 async fn spawn_router_app() -> String {
-    let items = hayai::HayaiRouter::new("/api/items")
+    let items = ultraapi::UltraApiRouter::new("/api/items")
         .tag("items")
         .security("bearer")
         .route(__HAYAI_ROUTE_E2E_LIST_ITEMS)
         .route(__HAYAI_ROUTE_E2E_GET_ITEM)
         .route(__HAYAI_ROUTE_E2E_DELETE_ITEM);
 
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Router Test API")
         .version("0.1.0")
         .bearer_auth()
@@ -465,14 +465,14 @@ async fn test_router_e2e_original_path_not_registered() {
 
 #[tokio::test]
 async fn test_router_e2e_nested_routers() {
-    let items = hayai::HayaiRouter::new("/items")
+    let items = ultraapi::UltraApiRouter::new("/items")
         .route(__HAYAI_ROUTE_E2E_LIST_ITEMS);
-    let v1 = hayai::HayaiRouter::new("/v1")
+    let v1 = ultraapi::UltraApiRouter::new("/v1")
         .include(items);
-    let api = hayai::HayaiRouter::new("/api")
+    let api = ultraapi::UltraApiRouter::new("/api")
         .include(v1);
 
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .include(api)
         .into_router();
 
@@ -553,11 +553,11 @@ async fn e2e_result_test(mode: String) -> Result<Item, ApiError> {
 }
 
 async fn spawn_result_app() -> String {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Result Test API")
         .version("0.1.0")
         .include(
-            hayai::HayaiRouter::new("")
+            ultraapi::UltraApiRouter::new("")
                 .route(__HAYAI_ROUTE_E2E_RESULT_TEST)
         )
         .into_router();
@@ -571,11 +571,11 @@ async fn spawn_result_app() -> String {
 }
 
 async fn spawn_put_app() -> String {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("PUT Test API")
         .version("0.1.0")
         .include(
-            hayai::HayaiRouter::new("/api")
+            ultraapi::UltraApiRouter::new("/api")
                 .route(__HAYAI_ROUTE_E2E_PUT_ITEM)
         )
         .into_router();
@@ -639,7 +639,7 @@ async fn get_state_user(id: i64, db: Dep<Database>, cfg: State<Config>) -> Resul
 }
 
 async fn spawn_state_app() -> String {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .dep(Database)
         .dep(Config { app_name: "TestApp".into() })
         .into_router();
@@ -670,10 +670,10 @@ async fn test_state_and_dep_together() {
 #[tokio::test]
 async fn test_state_missing_returns_500() {
     // App without Config registered
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .dep(Database)
         .include(
-            HayaiRouter::new("")
+            UltraApiRouter::new("")
                 .route(__HAYAI_ROUTE_GET_STATE_INFO)
         )
         .into_router();
@@ -714,11 +714,11 @@ async fn create_date_range(body: DateRangeItem) -> DateRangeItem {
 }
 
 async fn spawn_date_range_app() -> String {
-    let app = HayaiApp::new()
+    let app = UltraApiApp::new()
         .title("Date Range Test API")
         .version("0.1.0")
         .include(
-            HayaiRouter::new("")
+            UltraApiRouter::new("")
                 .route(__HAYAI_ROUTE_CREATE_DATE_RANGE)
         )
         .into_router();

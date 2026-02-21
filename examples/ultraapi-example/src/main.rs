@@ -1,6 +1,6 @@
-use hayai::prelude::*;
-use hayai::serde::Deserialize;
-use hayai::schemars::JsonSchema;
+use ultraapi::prelude::*;
+use ultraapi::serde::Deserialize;
+use ultraapi::schemars::JsonSchema;
 use std::collections::HashMap;
 
 /// A user in the system
@@ -143,8 +143,8 @@ async fn create_item(body: CreateItem) -> CreateItem {
     body
 }
 
-fn user_routes() -> HayaiRouter {
-    HayaiRouter::new("/users")
+fn user_routes() -> UltraApiRouter {
+    UltraApiRouter::new("/users")
         .tag("users")
         .security("bearer")
         .route(__HAYAI_ROUTE_GET_USER)
@@ -153,18 +153,18 @@ fn user_routes() -> HayaiRouter {
         .route(__HAYAI_ROUTE_DELETE_USER)
 }
 
-fn item_routes() -> HayaiRouter {
-    HayaiRouter::new("/items")
+fn item_routes() -> UltraApiRouter {
+    UltraApiRouter::new("/items")
         .tag("items")
         .route(__HAYAI_ROUTE_CREATE_ITEM)
 }
 
 #[tokio::main]
 async fn main() {
-    HayaiApp::new()
+    UltraApiApp::new()
         .title("My API")
         .version("1.0.0")
-        .description("A sample API demonstrating Hayai features")
+        .description("A sample API demonstrating UltraAPI features")
         .contact("Author", "author@example.com", "https://example.com")
         .license("MIT", "https://opensource.org/licenses/MIT")
         .server("http://localhost:3001")

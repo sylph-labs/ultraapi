@@ -1,10 +1,10 @@
 [package]
-name = "hayai-example"
+name = "ultraapi-example"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-hayai = { path = "../../hayai" }
+ultraapi = { path = "../../ultraapi" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
