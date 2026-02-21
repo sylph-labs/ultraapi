@@ -2,6 +2,11 @@
 name = "ultraapi-macros"
 version = "0.1.0"
 edition = "2021"
+description = "Proc macros for UltraAPI"
+license = "MIT"
+repository = "https://github.com/sylph-labs/ultraapi"
+keywords = ["openapi", "proc-macro", "api", "web"]
+categories = ["web-programming", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true
