@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
-use syn::{parse_macro_input, ItemFn, ItemStruct, ItemEnum, FnArg, PatType, Type, PathSegment, LitStr, LitInt};
+use syn::{parse_macro_input, parse::Parser, ItemFn, ItemStruct, ItemEnum, FnArg, PatType, Type, PathSegment, LitStr, LitInt, Path};
 
 fn extract_inner_type(seg: &PathSegment) -> Option<&Type> {
     if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
@@ -441,30 +441,30 @@ pub fn delete(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[proc_macro_attribute]
 pub fn api_model(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the attribute to look for validate(custom = "fn_name")
-    let mut custom_validation_fn: Option<proc_macro2::TokenStream> = None;
-    
-    // Parse attribute if provided (e.g., #[api_model(validate(custom = "fn_name"))])
-    let attr_str = attr.to_string();
-    if attr_str.contains("validate") {
-        // Simple string parsing to find validate(custom = "fn_name")
-        if let Some(start) = attr_str.find("custom") {
-            let rest = &attr_str[start..];
-            if let Some(eq_pos) = rest.find('=') {
-                let after_eq = &rest[eq_pos+1..];
-                // Find the quoted string
-                if let Some(quote_start) = after_eq.find('"') {
-                    if let Some(quote_end) = after_eq[quote_start+1..].find('"') {
-                        let fn_name = &after_eq[quote_start+1..quote_start+1+quote_end];
-                        if !fn_name.is_empty() {
-                            custom_validation_fn = Some(quote!(#fn_name));
-                        }
-                    }
+    // Parse optional model-level custom validator: #[api_model(validate(custom = "my_fn"))]
+    let mut custom_validation_fn: Option<Path> = None;
+
+    let parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("validate") {
+            meta.parse_nested_meta(|nested| {
+                if nested.path.is_ident("custom") {
+                    let value = nested.value()?;
+                    let lit: LitStr = value.parse()?;
+                    let parsed_path = lit
+                        .parse::<Path>()
+                        .map_err(|_| nested.error("custom validator must be a valid path string"))?;
+                    custom_validation_fn = Some(parsed_path);
                 }
-            }
+                Ok(())
+            })?;
         }
+        Ok(())
+    });
+
+    if let Err(err) = parser.parse(attr) {
+        return err.to_compile_error().into();
     }
-    
+
     let item_clone = item.clone();
     if let Ok(input) = syn::parse::<ItemStruct>(item) {
         api_model_struct(input, custom_validation_fn)
@@ -538,7 +538,7 @@ fn api_model_enum(input: ItemEnum) -> TokenStream {
     output.into()
 }
 
-fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2::TokenStream>) -> TokenStream {
+fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> TokenStream {
     let name = &input.ident;
     let vis = &input.vis;
     let attrs = &input.attrs;
@@ -723,6 +723,16 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2:
         quote! { Some(#struct_description.to_string()) }
     };
 
+    let custom_validation_check = if let Some(custom_fn) = custom_validation_fn {
+        quote! {
+            if let Err(custom_errors) = #custom_fn(self) {
+                errors.extend(custom_errors);
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let output = quote! {
         #(#attrs)*
         #[derive(ultraapi::serde::Serialize, ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
@@ -736,6 +746,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<proc_macro2:
             fn validate(&self) -> Result<(), Vec<String>> {
                 let mut errors = Vec::new();
                 #(#validation_checks)*
+                #custom_validation_check
                 if errors.is_empty() { Ok(()) } else { Err(errors) }
             }
         }

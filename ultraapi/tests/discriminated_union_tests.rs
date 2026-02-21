@@ -2,8 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use ultraapi::prelude::*;
-    use ultraapi::openapi::{Schema, Discriminator};
+    use ultraapi::openapi::{Discriminator, Schema};
     use std::collections::HashMap;
 
     // Test that plain enums still work correctly with enum values
