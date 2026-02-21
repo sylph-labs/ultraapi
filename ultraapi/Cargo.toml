@@ -9,7 +9,7 @@ keywords = ["axum", "fastapi", "openapi", "web", "async", "rest", "api"]
 categories = ["asynchronous", "web-programming", "api-bindings"]
 
 [dependencies]
-ultraapi-macros = { path = "../ultraapi-macros" }
+ultraapi-macros = { version = "0.1.0", path = "../ultraapi-macros" }
 axum = { version = "0.8", features = ["json"] }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
