@@ -5,7 +5,7 @@ edition = "2021"
 description = "A FastAPI-inspired Rust web framework with automatic OpenAPI generation"
 license = "MIT"
 repository = "https://github.com/sylph-labs/ultraapi"
-keywords = ["axum", "fastapi", "openapi", "web", "async", "rest", "api"]
+keywords = ["axum", "fastapi", "openapi", "web", "async"]
 categories = ["asynchronous", "web-programming", "api-bindings"]
 
 [dependencies]
