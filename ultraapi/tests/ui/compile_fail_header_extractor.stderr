@@ -1,0 +1,35 @@
+error[E0433]: failed to resolve: could not find `headers` in `axum`
+  --> tests/ui/compile_fail_header_extractor.rs:12:45
+   |
+12 |     _auth: axum::extract::TypedHeader<axum::headers::Authorization>,
+   |                                             ^^^^^^^ could not find `headers` in `axum`
+
+error[E0433]: failed to resolve: could not find `TypedHeader` in `extract`
+ --> tests/ui/compile_fail_header_extractor.rs:8:1
+  |
+8 | #[get("/test-header")]
+  | ^^^^^^^^^^^^^^^^^^^^^^ could not find `TypedHeader` in `extract`
+  |
+  = note: this error originates in the attribute macro `get` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0425]: cannot find type `TypedHeader` in module `axum::extract`
+  --> tests/ui/compile_fail_header_extractor.rs:12:27
+   |
+12 |     _auth: axum::extract::TypedHeader<axum::headers::Authorization>,
+   |                           ^^^^^^^^^^^ not found in `axum::extract`
+
+error[E0425]: cannot find type `TypedHeader` in module `ultraapi::axum::extract`
+ --> tests/ui/compile_fail_header_extractor.rs:8:1
+  |
+8 | #[get("/test-header")]
+  | ^^^^^^^^^^^^^^^^^^^^^^ not found in `ultraapi::axum::extract`
+  |
+  = note: this error originates in the attribute macro `get` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0282]: type annotations needed
+ --> tests/ui/compile_fail_header_extractor.rs:8:1
+  |
+8 | #[get("/test-header")]
+  | ^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+  |
+  = note: this error originates in the attribute macro `get` (in Nightly builds, run with -Z macro-backtrace for more info)

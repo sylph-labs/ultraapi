@@ -1,0 +1,25 @@
+error[E0433]: failed to resolve: could not find `CookieJar` in `extract`
+  --> tests/ui/compile_fail_cookie_extractor.rs:10:30
+   |
+10 |     _cookies: axum::extract::CookieJar,
+   |                              ^^^^^^^^^ could not find `CookieJar` in `extract`
+
+error[E0425]: cannot find type `CookieJar` in module `axum::extract`
+  --> tests/ui/compile_fail_cookie_extractor.rs:10:30
+   |
+10 |     _cookies: axum::extract::CookieJar,
+   |                              ^^^^^^^^^ not found in `axum::extract`
+
+error[E0425]: cannot find type `CookieJar` in module `ultraapi::axum::extract`
+  --> tests/ui/compile_fail_cookie_extractor.rs:10:30
+   |
+10 |     _cookies: axum::extract::CookieJar,
+   |                              ^^^^^^^^^ not found in `ultraapi::axum::extract`
+
+error[E0282]: type annotations needed
+ --> tests/ui/compile_fail_cookie_extractor.rs:7:1
+  |
+7 | #[get("/test-cookie")]
+  | ^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+  |
+  = note: this error originates in the attribute macro `get` (in Nightly builds, run with -Z macro-backtrace for more info)
