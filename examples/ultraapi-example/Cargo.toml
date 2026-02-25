@@ -1,0 +1,13 @@
+[package]
+name = "ultraapi-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ultraapi = { path = "../../ultraapi" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
+tokio-stream = "0.1"
+async-stream = "0.3"
+axum = { version = "0.8", features = [] }
