@@ -179,6 +179,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let mut tags: Vec<String> = Vec::new();
     let mut security_schemes: Vec<String> = Vec::new();
     // Response model shaping options
+    let mut has_response_model: bool = false;  // Track if #[response_model(...)] was used
     let mut include_fields: Option<Vec<String>> = None;
     let mut exclude_fields: Option<Vec<String>> = None;
     let mut by_alias: bool = false;
@@ -215,6 +216,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 }
             }
         } else if attr.path().is_ident("response_model") {
+            // Mark that response_model attribute was used
+            has_response_model = true;
             // Parse response_model(include={"a","b"}, exclude={"c"}, by_alias=true)
             // Simplified parsing: look for key=value patterns in tokens
             if let syn::Meta::List(list) = &attr.meta {
@@ -277,7 +280,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 }
             }
         } else if attr.path().is_ident("response_class") {
-            // Parse response_class("json"|"html"|"text"|"binary"|"stream"|"xml")
+            // Parse response_class("json"|"html"|"text"|"binary"|"stream"|"xml"|"file")
             if let syn::Meta::List(list) = &attr.meta {
                 let tokens = list.tokens.clone();
                 if let Ok(lit) = syn::parse2::<LitStr>(tokens) {
@@ -298,42 +301,36 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         } else if attr.path().is_ident("external_docs") {
             // Parse external_docs(url = "...", description = "...")
             if let syn::Meta::List(list) = &attr.meta {
-                let tokens_str = list.tokens.to_string();
-                
-                // Extract url
-                if let Some(start) = tokens_str.find("url") {
-                    let after_url = &tokens_str[start..];
-                    if let Some(eq_pos) = after_url.find('=') {
-                        let after_eq = &after_url[eq_pos+1..];
-                        let end_pos = after_eq.find(|c: char| !c.is_alphanumeric() && c != '"' && c != '{' && c != '}' && c != ',' && c != ' ')
-                            .map(|p| p + eq_pos + start + 1)
-                            .unwrap_or(tokens_str.len());
-                        let url_str = &tokens_str[eq_pos+1+start..end_pos.min(tokens_str.len())];
-                        let url = url_str.trim().trim_matches('"').trim_matches('{').trim_matches('}');
-                        if !url.is_empty() {
-                            external_docs_url = Some(url.to_string());
-                        }
+                // Robustly parse: external_docs(url = "...", description = "...")
+                // (avoid `to_string()` parsing which breaks on `https://...`)
+                let parser = syn::meta::parser(|meta| {
+                    if meta.path.is_ident("url") {
+                        let value = meta.value()?;
+                        let lit: LitStr = value.parse()?;
+                        external_docs_url = Some(lit.value());
+                        Ok(())
+                    } else if meta.path.is_ident("description") {
+                        let value = meta.value()?;
+                        let lit: LitStr = value.parse()?;
+                        external_docs_description = Some(lit.value());
+                        Ok(())
+                    } else {
+                        // Ignore unknown keys for forward compatibility
+                        Ok(())
                     }
-                }
-                
-                // Extract description
-                if let Some(start) = tokens_str.find("description") {
-                    let after_desc = &tokens_str[start..];
-                    if let Some(eq_pos) = after_desc.find('=') {
-                        let after_eq = &after_desc[eq_pos+1..];
-                        let end_pos = after_eq.find(|c: char| !c.is_alphanumeric() && c != '"' && c != '{' && c != '}' && c != ',' && c != ' ')
-                            .map(|p| p + eq_pos + start + 1)
-                            .unwrap_or(tokens_str.len());
-                        let desc_str = &tokens_str[eq_pos+1+start..end_pos.min(tokens_str.len())];
-                        let desc = desc_str.trim().trim_matches('"').trim_matches('{').trim_matches('}');
-                        if !desc.is_empty() {
-                            external_docs_description = Some(desc.to_string());
-                        }
-                    }
+                });
+
+                // Parse errors should be surfaced as a compile error (DX)
+                if let Err(err) = parser.parse2(list.tokens.clone()) {
+                    return err.to_compile_error().into();
                 }
             }
+        } else if attr.path().is_ident("callback") {
+            // Parse #[callback(name = "...", expression = "...", route = ROUTE_REF)]
+            // This attribute is handled separately - it generates inventory::submit! for CallbackInfo
+            // We don't include it in clean_attrs as it's not a runtime attribute
         } else {
-            // Not doc, not status/tag/security/response_model/response_class - keep it (e.g. serde, schemars)
+            // Not doc, not status/tag/security/response_model/response_class/callback - keep it (e.g. serde, schemars)
             clean_attrs.push(attr);
         }
     }
@@ -360,6 +357,60 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let route_ref_name = format_ident!("__ULTRAAPI_ROUTE_{}", fn_name.to_string().to_uppercase());
     let hayai_route_ref_name =
         format_ident!("__HAYAI_ROUTE_{}", fn_name.to_string().to_uppercase());
+
+    // Parse #[callback(...)] attributes from the function
+    // These define callbacks for OpenAPI specification
+    // Must be after route_info_name is defined so we can reference it
+    let mut callback_submits: Vec<proc_macro2::TokenStream> = Vec::new();
+    for attr in &input_fn.attrs {
+        if attr.path().is_ident("callback") {
+            if let syn::Meta::List(list) = &attr.meta {
+                // Parse using parse_nested_meta for robust parsing
+                let mut callback_name: Option<String> = None;
+                let mut callback_expression: Option<String> = None;
+                let mut callback_route_ident: Option<syn::Ident> = None;
+                
+                let parser = syn::meta::parser(|meta| {
+                    if meta.path.is_ident("name") {
+                        let value: LitStr = meta.value()?.parse()?;
+                        callback_name = Some(value.value());
+                    } else if meta.path.is_ident("expression") {
+                        let value: LitStr = meta.value()?.parse()?;
+                        callback_expression = Some(value.value());
+                    } else if meta.path.is_ident("route") {
+                        // Parse the route identifier (e.g., CALLBACK_ROUTE)
+                        let ident: syn::Ident = meta.value()?.parse()?;
+                        callback_route_ident = Some(ident);
+                    }
+                    Ok(())
+                });
+                
+                if let Err(err) = parser.parse2(list.tokens.clone()) {
+                    return err.to_compile_error().into();
+                }
+                
+                if let (Some(name), Some(expr), Some(route_ident)) = (callback_name, callback_expression, callback_route_ident) {
+                    // Create the inventory::submit! token stream for this callback
+                    let submit = quote! {
+                        ultraapi::inventory::submit! {
+                            ultraapi::CallbackInfo {
+                                owner: &#route_info_name,
+                                name: #name,
+                                expression: #expr,
+                                route: #route_ident,
+                            }
+                        }
+                    };
+                    callback_submits.push(submit);
+                } else {
+                    return syn::Error::new_spanned(
+                        list,
+                        "#[callback(...)] requires name, expression, and route parameters"
+                    ).to_compile_error().into();
+                }
+            }
+        }
+    }
 
     let mut dep_extractions = Vec::new();
     let mut call_args = Vec::new();
@@ -616,8 +667,9 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     // Generate response based on status code
     let status_lit = proc_macro2::Literal::u16_unsuffixed(success_status);
     
-    // Generate the response shaping code if needed
-    let response_shaping_expr = if include_fields.is_some() || exclude_fields.is_some() || by_alias {
+    // Generate the response shaping code if response_model attribute was used
+    // This ensures shaping runs even when by_alias=false is explicitly set
+    let response_shaping_expr = if has_response_model {
         let include_expr = if let Some(ref fields) = include_fields {
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
             quote! { Some(vec![#(#field_refs),*]) }
@@ -638,13 +690,16 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             quote! { false }
         };
         
+        // Get the return type name for alias lookup
+        let type_name_expr = quote! { Some(#return_type_name) };
+        
         quote! {
             let shaping_options = ultraapi::ResponseModelOptions {
                 include: #include_expr,
                 exclude: #exclude_expr,
                 by_alias: #by_alias_expr,
             };
-            let value = shaping_options.apply(value);
+            let value = shaping_options.apply_with_aliases(value, #type_name_expr, #by_alias);
         }
     } else {
         quote! { /* No response model shaping */ }
@@ -744,6 +799,26 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         ultraapi::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
                         [("content-type", "application/xml")],
                         body,
+                    ).into_response())
+                }
+            }
+        }
+        // File response - returns FileResponse which handles content-type and content-disposition
+        Some("file") => {
+            if is_result_return {
+                quote! {
+                    let result = #fn_name(#(#call_args),*).await?;
+                    Ok((
+                        ultraapi::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
+                        result,
+                    ).into_response())
+                }
+            } else {
+                quote! {
+                    let result = #fn_name(#(#call_args),*).await;
+                    Ok((
+                        ultraapi::axum::http::StatusCode::from_u16(#status_lit).unwrap(),
+                        result,
                     ).into_response())
                 }
             }
@@ -858,9 +933,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         Some("binary") => quote! { ultraapi::ResponseClass::Binary },
         Some("stream") => quote! { ultraapi::ResponseClass::Stream },
         Some("xml") => quote! { ultraapi::ResponseClass::Xml },
+        Some("file") => quote! { ultraapi::ResponseClass::File },
         Some("json") | None => quote! { ultraapi::ResponseClass::Json },
         other => quote! { 
-            compile_error!(concat!("Invalid response_class: ", #other, ". Valid values are: json, html, text, binary, stream, xml")) 
+            compile_error!(concat!("Invalid response_class: ", #other, ". Valid values are: json, html, text, binary, stream, xml, file")) 
         },
     };
 
@@ -999,6 +1075,9 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         pub static #hayai_route_ref_name: &ultraapi::RouteInfo = &#route_info_name;
 
         ultraapi::inventory::submit! { &#route_info_name }
+
+        // Generate inventory::submit! for callbacks defined via #[callback(...)] attribute
+        #(#callback_submits)*
     };
 
     output.into()
@@ -1608,6 +1687,8 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
     let mut schema_patches = Vec::new();
     let mut clean_fields = Vec::new();
     let mut serde_attrs_for_fields = Vec::new();
+    // Collect field name -> alias mappings for response_model shaping
+    let mut field_aliases: Vec<(String, String)> = Vec::new();
 
     for field in fields {
         let field_name = field.ident.as_ref().unwrap();
@@ -1698,6 +1779,13 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         if !all_serde_parts.is_empty() && !has_serde_attr {
             let serde_attr = quote! { #[serde(#(#all_serde_parts),*)] };
             serde_attrs_for_fields.push((field_name.clone(), serde_attr));
+        }
+
+        // Collect alias mapping: field_name -> alias (when they differ)
+        // This is used by response_model shaping to convert between field names and aliases
+        let rust_field_name = field_name.to_string();
+        if rust_field_name != schema_field_name_str {
+            field_aliases.push((rust_field_name, schema_field_name_str.clone()));
         }
 
         // Extract doc comment for field description
@@ -1918,6 +2006,42 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         })
         .collect();
 
+    // Build the alias registration code - only if there are aliases
+    // We register a function that returns the alias mapping for runtime lookup
+    let alias_registration = if !field_aliases.is_empty() {
+        // Generate entries as (&str, &str) const pairs
+        let alias_entries: Vec<_> = field_aliases
+            .iter()
+            .map(|(field, alias)| {
+                let field_lit = field.as_str();
+                let alias_lit = alias.as_str();
+                quote! { (#field_lit, #alias_lit) }
+            })
+            .collect();
+        
+        Some(quote! {
+            ultraapi::inventory::submit! {
+                ultraapi::FieldAliasInfo {
+                    type_name: #name_str,
+                    get_aliases: || {
+                        // Build the HashMap at runtime using const data
+                        const PAIRS: &[(&str, &str)] = &[#(#alias_entries),*];
+                        static MAP: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
+                        MAP.get_or_init(|| {
+                            let mut m = std::collections::HashMap::new();
+                            for (k, v) in PAIRS {
+                                m.insert(k.to_string(), v.to_string());
+                            }
+                            m
+                        })
+                    },
+                }
+            }
+        })
+    } else {
+        None
+    };
+
     let output = quote! {
         #(#attrs)*
         #[derive(ultraapi::serde::Serialize, ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
@@ -1961,7 +2085,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                             if let Some(prop) = schema.properties.get_mut(&name) {
                                 if patch.min_length.is_some() { prop.min_length = patch.min_length; }
                                 if patch.max_length.is_some() { prop.max_length = patch.max_length; }
-                                if patch.format.is_some() { prop.format = patch.format; }
+                                if patch.format.is_some() { prop.format = patch.format.clone(); }
                                 if patch.minimum.is_some() { prop.minimum = patch.minimum; }
                                 if patch.maximum.is_some() { prop.maximum = patch.maximum; }
                                 if patch.pattern.is_some() { prop.pattern = patch.pattern.clone(); }
@@ -1985,6 +2109,8 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                 },
             }
         }
+
+        #alias_registration
     };
 
     output.into()

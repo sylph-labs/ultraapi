@@ -80,7 +80,47 @@ async fn xml_response() -> String {
     r#"<user><id>1</id><name>XML User</name></user>"#.to_string()
 }
 
-// --- Test 8: JSON with Result type ---
+// --- Test 8: File response (basic) ---
+
+/// File endpoint returns file bytes
+#[get("/file")]
+#[response_class("file")]
+async fn file_response() -> FileResponse {
+    FileResponse::new(vec![0x00, 0x01, 0x02, 0xFF])
+}
+
+// --- Test 9: File response with filename ---
+
+/// File endpoint returns file with filename
+#[get("/file/with-name")]
+#[response_class("file")]
+async fn file_response_with_name() -> FileResponse {
+    FileResponse::new(vec![0xDE, 0xAD, 0xBE, 0xEF])
+        .filename("example.bin")
+}
+
+// --- Test 10: File response with custom content-type ---
+
+/// File endpoint returns file with custom content-type
+#[get("/file/with-content-type")]
+#[response_class("file")]
+async fn file_response_with_content_type() -> FileResponse {
+    FileResponse::new(vec![0x89, 0x50, 0x4E, 0x47]) // PNG magic bytes
+        .with_content_type("image/png")
+}
+
+// --- Test 11: File response with filename and content-type ---
+
+/// File endpoint returns file with both filename and content-type
+#[get("/file/with-all")]
+#[response_class("file")]
+async fn file_response_with_all() -> FileResponse {
+    FileResponse::new(vec![0x89, 0x50, 0x4E, 0x47])
+        .filename("image.png")
+        .with_content_type("image/png")
+}
+
+// --- Test 12: JSON with Result type ---
 
 /// JSON endpoint with Result return type
 #[get("/json/result")]
@@ -204,6 +244,73 @@ async fn test_xml_response_content_type() {
     assert!(body.contains("<id>1</id>"));
 }
 
+#[tokio::test]
+async fn test_file_response_content_type() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/file")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/octet-stream"
+    );
+    // No content-disposition header for file without filename
+    assert!(resp.headers().get("content-disposition").is_none());
+    // Get bytes last (consumes resp)
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(bytes, vec![0x00, 0x01, 0x02, 0xFF]);
+}
+
+#[tokio::test]
+async fn test_file_response_with_filename() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/file/with-name")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/octet-stream"
+    );
+    // Check content-disposition header first
+    let cd = resp.headers().get("content-disposition").unwrap();
+    assert!(cd.to_str().unwrap().contains("attachment"));
+    assert!(cd.to_str().unwrap().contains("example.bin"));
+    // Get bytes last (consumes resp)
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(bytes, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+}
+
+#[tokio::test]
+async fn test_file_response_with_content_type() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/file/with-content-type")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    // Custom content-type should be used
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "image/png"
+    );
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(bytes, vec![0x89, 0x50, 0x4E, 0x47]);
+}
+
+#[tokio::test]
+async fn test_file_response_with_all() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/file/with-all")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    // Custom content-type should be used
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "image/png"
+    );
+    // Check content-disposition header with filename (before getting bytes)
+    let cd = resp.headers().get("content-disposition").unwrap();
+    assert!(cd.to_str().unwrap().contains("attachment"));
+    assert!(cd.to_str().unwrap().contains("image.png"));
+    // Get bytes last (consumes resp)
+    let bytes = resp.bytes().await.unwrap();
+    assert_eq!(bytes, vec![0x89, 0x50, 0x4E, 0x47]);
+}
+
 // --- OpenAPI Spec Tests ---
 
 #[tokio::test]
@@ -296,6 +403,21 @@ async fn test_openapi_xml_content_type() {
     assert!(response.get("application/json").is_none());
 }
 
+#[tokio::test]
+async fn test_openapi_file_content_type() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let spec: serde_json::Value = resp.json().await.unwrap();
+    
+    // Check /file endpoint
+    let get_op = &spec["paths"]["/file"]["get"];
+    let response = &get_op["responses"]["200"]["content"];
+    
+    assert!(response.get("application/octet-stream").is_some());
+    assert!(response.get("application/json").is_none());
+}
+
 // --- ResponseClass enum tests ---
 
 #[test]
@@ -332,4 +454,57 @@ fn test_response_class_xml_content_type() {
 fn test_response_class_default_is_json() {
     let rc = ResponseClass::default();
     assert_eq!(rc, ResponseClass::Json);
+}
+
+#[test]
+fn test_response_class_file_content_type() {
+    assert_eq!(ResponseClass::File.content_type(), "application/octet-stream");
+}
+
+// --- FileResponse tests ---
+
+#[test]
+fn test_file_response_new() {
+    let bytes = vec![0x00, 0x01, 0x02];
+    let response = FileResponse::new(bytes.clone());
+    assert_eq!(response.bytes(), &bytes);
+    assert_eq!(response.get_filename(), None);
+    assert_eq!(response.get_content_type(), "application/octet-stream");
+}
+
+#[test]
+fn test_file_response_builder_with_filename() {
+    let response = FileResponse::new(vec![0x00])
+        .filename("test.txt");
+    assert_eq!(response.get_filename(), Some(&"test.txt".to_string()));
+}
+
+#[test]
+fn test_file_response_builder_with_content_type() {
+    let response = FileResponse::new(vec![0x00])
+        .with_content_type("image/png");
+    assert_eq!(response.get_content_type(), "image/png");
+}
+
+#[test]
+fn test_file_response_builder_with_all() {
+    let response = FileResponse::new(vec![0x00])
+        .filename("test.png")
+        .with_content_type("image/png");
+    assert_eq!(response.get_filename(), Some(&"test.png".to_string()));
+    assert_eq!(response.get_content_type(), "image/png");
+}
+
+#[test]
+fn test_file_response_into_bytes() {
+    let bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
+    let response = FileResponse::new(bytes.clone());
+    assert_eq!(response.into_bytes(), bytes);
+}
+
+#[test]
+fn test_file_response_from_vec() {
+    let bytes = vec![0xCA, 0xFE, 0xBA, 0xBE];
+    let response: FileResponse = bytes.clone().into();
+    assert_eq!(response.bytes(), &bytes);
 }

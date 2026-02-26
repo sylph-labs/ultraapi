@@ -770,3 +770,195 @@ fn test_response_model_all_excluded() {
     // All fields should be excluded
     assert!(obj.is_empty());
 }
+
+// ============================================================================
+// Tests for apply_with_aliases (new method with alias conversion support)
+// ============================================================================
+
+#[test]
+fn test_apply_with_aliases_by_alias_true() {
+    // Test that by_alias=true converts field names to aliases in output
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: true,
+    };
+    
+    // Simulate a serialized value with field names (from serde)
+    let value = ultraapi::serde_json::json!({
+        "user_id": 1,
+        "display_name": "Test User",
+        "email": "test@example.com"
+    });
+    
+    // Apply with alias mapping for ApiUser type
+    let result = options.apply_with_aliases(value, Some("ApiUser"), true);
+    let obj = result.as_object().unwrap();
+    
+    // Should have alias keys in output
+    assert!(obj.contains_key("userId"), "Should have alias 'userId'");
+    assert!(obj.contains_key("displayName"), "Should have alias 'displayName'");
+    assert!(obj.contains_key("email"), "Should have 'email' (no alias)");
+}
+
+#[test]
+fn test_apply_with_aliases_by_alias_false() {
+    // Test that by_alias=false keeps field names in output
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: false,
+    };
+    
+    let value = ultraapi::serde_json::json!({
+        "user_id": 1,
+        "display_name": "Test User"
+    });
+    
+    let result = options.apply_with_aliases(value, Some("ApiUser"), false);
+    let obj = result.as_object().unwrap();
+    
+    // Should have field names in output (not aliases)
+    assert!(obj.contains_key("user_id"), "Should have field name 'user_id'");
+    assert!(obj.contains_key("display_name"), "Should have field name 'display_name'");
+    // Should NOT have aliases
+    assert!(!obj.contains_key("userId"), "Should NOT have alias 'userId'");
+}
+
+#[test]
+fn test_apply_with_aliases_include_by_alias_true() {
+    // Test include + by_alias=true
+    let options = ultraapi::ResponseModelOptions {
+        include: Some(vec!["user_id", "display_name"]),
+        exclude: None,
+        by_alias: true,
+    };
+    
+    let value = ultraapi::serde_json::json!({
+        "user_id": 1,
+        "display_name": "Test User",
+        "email": "test@example.com",
+        "password_hash": "secret"
+    });
+    
+    let result = options.apply_with_aliases(value, Some("ApiUser"), true);
+    let obj = result.as_object().unwrap();
+    
+    // Should have aliases in output
+    assert!(obj.contains_key("userId"), "Should have alias 'userId'");
+    assert!(obj.contains_key("displayName"), "Should have alias 'displayName'");
+    // Should NOT have excluded fields
+    assert!(!obj.contains_key("email"), "Should NOT have 'email' (not in include)");
+    assert!(!obj.contains_key("password_hash"), "Should NOT have 'password_hash' (not in include)");
+}
+
+#[test]
+fn test_apply_with_aliases_exclude_by_alias_true() {
+    // Test exclude + by_alias=true
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: Some(vec!["password_hash"]),
+        by_alias: true,
+    };
+    
+    let value = ultraapi::serde_json::json!({
+        "user_id": 1,
+        "display_name": "Test User",
+        "email": "test@example.com",
+        "password_hash": "secret"
+    });
+    
+    let result = options.apply_with_aliases(value, Some("ApiUser"), true);
+    let obj = result.as_object().unwrap();
+    
+    // Should have aliases in output
+    assert!(obj.contains_key("userId"), "Should have alias 'userId'");
+    assert!(obj.contains_key("displayName"), "Should have alias 'displayName'");
+    assert!(obj.contains_key("email"), "Should have 'email'");
+    // Should NOT have excluded field
+    assert!(!obj.contains_key("password_hash"), "Should NOT have 'password_hash'");
+}
+
+#[test]
+fn test_apply_with_aliases_nested() {
+    // Test nested object with by_alias=true
+    // Note: Nested objects are handled by recursive calls with the SAME type_name
+    // This tests the recursion, not the specific nested type alias mapping
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: true,
+    };
+    
+    // Simulate a nested structure similar to what would come from serialization
+    // The key thing is that the top-level gets transformed
+    let value = ultraapi::serde_json::json!({
+        "order_id": 100,
+        "customer": {
+            "user_id": 1,
+            "display_name": "John Doe"
+        },
+        "total": 99.99
+    });
+    
+    // Using ApiUser as the type - this tests that:
+    // 1. Top-level keys are processed
+    // 2. Nested objects are recursively processed with the same type
+    let result = options.apply_with_aliases(value, Some("ApiUser"), true);
+    let obj = result.as_object().unwrap();
+    
+    // Top-level should NOT have alias (order_id doesn't have alias in OrderWithUser)
+    // The nested customer should have aliases (user_id -> userId)
+    assert!(obj.contains_key("total"), "Should have 'total'");
+    
+    // Nested object should also have aliases (recursively processed)
+    let customer = obj.get("customer").unwrap().as_object().unwrap();
+    // Note: This uses the ApiUser alias mapping, not OrderWithUser's
+    assert!(customer.contains_key("userId"), "Nested should have alias 'userId' (from ApiUser mapping)");
+}
+
+#[test]
+fn test_apply_with_aliases_array() {
+    // Test array with by_alias=true
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: true,
+    };
+    
+    let value = ultraapi::serde_json::json!([
+        {"user_id": 1, "display_name": "John"},
+        {"user_id": 2, "display_name": "Jane"}
+    ]);
+    
+    let result = options.apply_with_aliases(value, Some("ApiUser"), true);
+    let arr = result.as_array().unwrap();
+    
+    assert_eq!(arr.len(), 2);
+    
+    // Each item should have aliases
+    assert!(arr[0].as_object().unwrap().contains_key("userId"));
+    assert!(arr[1].as_object().unwrap().contains_key("displayName"));
+}
+
+#[test]
+fn test_apply_with_aliases_no_type_matching() {
+    // Test when type name doesn't match any registered aliases
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: true,
+    };
+    
+    let value = ultraapi::serde_json::json!({
+        "user_id": 1,
+        "display_name": "Test User"
+    });
+    
+    // Use a type name that doesn't exist in the inventory
+    let result = options.apply_with_aliases(value, Some("NonExistentType"), true);
+    let obj = result.as_object().unwrap();
+    
+    // Keys should remain unchanged (no alias conversion)
+    assert!(obj.contains_key("user_id"), "Should keep field name when no alias mapping found");
+}

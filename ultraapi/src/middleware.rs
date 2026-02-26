@@ -628,7 +628,7 @@ impl MiddlewareBuilder {
     }
 
     /// Add a single security scheme configuration
-    pub fn with_security_scheme(mut self, scheme: SecuritySchemeConfig) -> Self {
+    pub fn with_security_scheme(self, scheme: SecuritySchemeConfig) -> Self {
         self.with_security_schemes(vec![scheme])
     }
 

@@ -2,6 +2,7 @@ pub mod grpc;
 pub mod lifespan;
 pub mod middleware;
 pub mod openapi;
+pub mod templates;
 
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -9,6 +10,7 @@ use axum::Router;
 use serde::Serialize;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
 use lifespan::Lifecycle;
@@ -30,12 +32,13 @@ pub mod prelude {
     pub use crate::inventory;
     pub use crate::schemars;
     pub use crate::serde;
+    pub use crate::templates::{TemplateResponse, Templates, template_response};
     pub use crate::{
         lifespan::Lifecycle,
         middleware::{CorsConfig, MiddlewareBuilder},
     };
     pub use crate::{sse_data, sse_event};
-    pub use crate::{ApiError, Depends, Dep, Generator, ResponseClass, Scope, State, UltraApiApp, UltraApiRouter, Validate, YieldDep, DependencyScope, ResponseModelOptions};
+    pub use crate::{ApiError, Depends, Dep, FileResponse, Generator, ResponseClass, Scope, State, UltraApiApp, UltraApiRouter, Validate, YieldDep, DependencyScope, ResponseModelOptions};
     pub use axum::extract::{Form, Multipart, Query};
     pub use axum_extra::extract::{CookieJar, TypedHeader};
     pub use ultraapi_macros::{api_model, delete, get, post, put, sse, ws};
@@ -369,7 +372,7 @@ impl<G: Generator> YieldDep<G> {
 
     /// Run cleanup (call the generator's cleanup)
     pub async fn cleanup(&mut self) -> Result<(), DependencyError> {
-        if let Some(value) = self.value.take() {
+        if let Some(_value) = self.value.take() {
             // We need to reconstruct the generator with the value for cleanup
             // For simplicity, we'll use the generator directly
             self.generator.clone().cleanup().await
@@ -510,6 +513,7 @@ struct DependsFunc {
     name: &'static str,
     // Store the function using type erasure with Arc
     func: Arc<dyn Fn(AppState) -> std::pin::Pin<Box<dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, DependencyError>> + Send>> + Send + Sync>,
+    #[allow(dead_code)]
     output_type_name: &'static str,
 }
 
@@ -586,7 +590,7 @@ impl DependsResolver {
     /// Resolve a generator dependency and register cleanup hooks
     pub async fn resolve_generator<T: 'static + Send + Sync>(
         &self,
-        state: &AppState,
+        _state: &AppState,
         dependency_scope: &DependencyScope,
     ) -> Result<Arc<dyn std::any::Any + Send + Sync>, DependencyError> {
         let entry = self.generators.read()
@@ -913,6 +917,8 @@ pub enum ResponseClass {
     Stream,
     /// XML response (application/xml)
     Xml,
+    /// File response with optional filename and content-type (application/octet-stream default)
+    File,
 }
 
 impl Default for ResponseClass {
@@ -931,30 +937,189 @@ impl ResponseClass {
             ResponseClass::Binary => "application/octet-stream",
             ResponseClass::Stream => "application/octet-stream",
             ResponseClass::Xml => "application/xml",
+            ResponseClass::File => "application/octet-stream",
         }
+    }
+}
+
+/// ファイルレスポンス用型
+/// 
+/// `#[response_class("file")]` が指定されたエンドポイントの返り値として使用します。
+/// 以下の機能を提供します:
+/// - ファイルのバイト列（Vec<u8>）
+/// - オプションのファイル名（Content-Disposition header で attachment; filename="..." を付与）
+/// - オプションの content-type（指定がない場合は application/octet-stream）
+/// 
+/// # Example
+/// 
+/// ```ignore
+/// use ultraapi::prelude::*;
+/// 
+/// #[get("/download")]
+/// #[response_class("file")]
+/// async fn download_file() -> FileResponse {
+///     FileResponse::new(vec![0x00, 0x01, 0x02])
+///         .filename("example.bin")
+///         .content_type("application/octet-stream")
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct FileResponse {
+    /// ファイルのバイト列
+    bytes: Vec<u8>,
+    /// ファイル名（Content-Disposition header 用）
+    filename: Option<String>,
+    /// Content-Type（指定がない場合は application/octet-stream）
+    content_type: Option<String>,
+}
+
+impl FileResponse {
+    /// 新しい FileResponse を作成
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            filename: None,
+            content_type: None,
+        }
+    }
+
+    /// ファイル名を設定
+    pub fn filename(mut self, filename: impl Into<String>) -> Self {
+        self.filename = Some(filename.into());
+        self
+    }
+
+    /// Content-Type を設定
+    pub fn with_content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.content_type = Some(content_type.into());
+        self
+    }
+
+    /// バイト列を取得
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
+
+    /// バイト列を参照で取得
+    pub fn bytes(&self) -> &Vec<u8> {
+        &self.bytes
+    }
+
+    /// ファイル名を取得
+    pub fn get_filename(&self) -> Option<&String> {
+        self.filename.as_ref()
+    }
+
+    /// Content-Type を取得（指定がない場合はデフォルト値を返す）
+    pub fn get_content_type(&self) -> &str {
+        self.content_type.as_deref().unwrap_or("application/octet-stream")
+    }
+}
+
+impl From<Vec<u8>> for FileResponse {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl IntoResponse for FileResponse {
+    fn into_response(self) -> Response {
+        // Get content_type before consuming self.bytes
+        let content_type = self.get_content_type().to_string();
+        let filename = self.filename.clone();
+        
+        let mut response = axum::response::Response::new(self.bytes.into());
+        
+        // Content-Type を設定
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            content_type.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+        );
+        
+        // filename が指定されていれば Content-Disposition を設定
+        if let Some(filename) = &filename {
+            let disposition = format!("attachment; filename=\"{}\"", filename);
+            response.headers_mut().insert(
+                axum::http::header::CONTENT_DISPOSITION,
+                disposition.parse().unwrap(),
+            );
+        }
+        
+        response
     }
 }
 
 impl ResponseModelOptions {
     /// Apply response model shaping to a serde_json::Value
+    /// This method handles include/exclude filtering only (no alias conversion)
     pub fn apply(&self, value: serde_json::Value) -> serde_json::Value {
+        self.apply_with_aliases(value, None, false)
+    }
+
+    /// Apply response model shaping with alias support
+    /// 
+    /// Steps:
+    /// 1. If aliases provided, normalize keys from alias names to field names
+    /// 2. Apply include/exclude filtering using field names
+    /// 3. If by_alias=true, convert field names back to alias names for output
+    /// 
+    /// # Arguments
+    /// * `value` - The JSON value to transform
+    /// * `type_name` - Optional type name to look up alias mappings
+    /// * `by_alias` - Whether to use alias names in output (true) or field names (false)
+    pub fn apply_with_aliases(&self, value: serde_json::Value, type_name: Option<&str>, by_alias: bool) -> serde_json::Value {
+        // Get alias mapping if type_name provided
+        let aliases = type_name.and_then(|tn| get_field_aliases(tn));
+        
+        // Build reverse mapping (alias -> field_name)
+        let reverse_aliases: std::collections::HashMap<String, String> = aliases
+            .as_ref()
+            .map(|a| a.iter().map(|(k, v)| (v.clone(), k.clone())).collect())
+            .unwrap_or_default();
+        
+        // If we have aliases, serde serialized with aliases, so we need to convert
+        let has_aliases = !reverse_aliases.is_empty();
+        
         match value {
             serde_json::Value::Object(map) => {
                 let mut result = serde_json::Map::new();
                 
                 for (key, val) in map {
+                    // Step 1: Normalize key to field name if we have aliases
+                    let field_name = if has_aliases {
+                        // Try to find field name from alias, fall back to key if not found
+                        reverse_aliases.get(&key).cloned().unwrap_or_else(|| key.clone())
+                    } else {
+                        key.clone()
+                    };
+                    
+                    // Step 2: Apply include/exclude using field names
                     let should_include = match (&self.include, &self.exclude) {
                         // If include is specified, only include those fields
-                        (Some(include_list), _) => include_list.contains(&key.as_str()),
+                        (Some(include_list), _) => include_list.contains(&field_name.as_str()),
                         // If only exclude is specified, exclude listed fields
-                        (None, Some(exclude_list)) => !exclude_list.contains(&key.as_str()),
+                        (None, Some(exclude_list)) => !exclude_list.contains(&field_name.as_str()),
                         // No filtering
                         (None, None) => true,
                     };
                     
                     if should_include {
                         // Recursively apply to nested objects
-                        result.insert(key, self.apply(val));
+                        let transformed_val = self.apply_with_aliases(val, type_name, by_alias);
+                        
+                        // Step 3: Convert output key based on by_alias setting
+                        let output_key = if by_alias && has_aliases {
+                            // Convert field name back to alias for output
+                            aliases
+                                .as_ref()
+                                .and_then(|a| a.get(&field_name).cloned())
+                                .unwrap_or(field_name)
+                        } else {
+                            // Keep field name
+                            field_name
+                        };
+                        
+                        result.insert(output_key, transformed_val);
                     }
                 }
                 
@@ -962,7 +1127,7 @@ impl ResponseModelOptions {
             }
             // For arrays, apply to each element
             serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(arr.into_iter().map(|v| self.apply(v)).collect())
+                serde_json::Value::Array(arr.into_iter().map(|v| self.apply_with_aliases(v, type_name, by_alias)).collect())
             }
             // Other values pass through unchanged
             other => other,
@@ -1006,6 +1171,21 @@ pub struct RouteInfo {
 }
 
 inventory::collect!(&'static RouteInfo);
+
+/// OpenAPI Callback information collected via #[callback(...)] attribute.
+/// This enables automatic callback registration from route definitions.
+pub struct CallbackInfo {
+    /// The owner route that this callback is attached to
+    pub owner: &'static RouteInfo,
+    /// Callback name (e.g., "orderCreated")
+    pub name: &'static str,
+    /// Callback URL expression (e.g., "{$request.body#/callbackUrl}")
+    pub expression: &'static str,
+    /// The callback route that handles the callback
+    pub route: &'static RouteInfo,
+}
+
+inventory::collect!(CallbackInfo);
 
 #[derive(Clone)]
 struct ProtectedRoute {
@@ -1059,6 +1239,29 @@ pub struct SchemaInfo {
 }
 
 inventory::collect!(SchemaInfo);
+
+/// Field alias mapping: field_name -> alias_name
+/// Used by response_model shaping to convert between field names and aliases
+/// 
+/// We store a function that returns the aliases HashMap, since HashMap cannot be
+/// constructed in const context but OnceLock can be used for lazy initialization.
+pub struct FieldAliasInfo {
+    pub type_name: &'static str,
+    /// Function that returns the alias mapping for this type
+    pub get_aliases: fn() -> &'static std::collections::HashMap<String, String>,
+}
+
+inventory::collect!(FieldAliasInfo);
+
+/// Helper to get alias mapping for a type by name
+pub fn get_field_aliases(type_name: &str) -> Option<std::collections::HashMap<String, String>> {
+    for info in inventory::iter::<FieldAliasInfo> {
+        if info.type_name == type_name {
+            return Some((info.get_aliases)().clone());
+        }
+    }
+    None
+}
 
 /// A resolved route with runtime prefix and merged tags/security
 pub struct ResolvedRoute {
@@ -1234,6 +1437,17 @@ pub struct UltraApiApp {
     middleware: MiddlewareBuilder,
     /// Lifecycle hooks (startup/shutdown)
     lifecycle: Lifecycle,
+    /// OpenAPI webhooks (not registered in runtime router)
+    webhooks: HashMap<String, openapi::PathItem>,
+    /// OpenAPI callbacks (attached to owner route's operation)
+    /// Key: (owner_route_path, owner_method, callback_name, expression, callback_route)
+    callbacks: Vec<(&'static RouteInfo, String, String, &'static RouteInfo)>,
+    /// Mounted sub-applications (path, sub_app)
+    mounted_apps: Vec<(String, UltraApiApp)>,
+    /// Static files directories (path, dir_path)
+    static_files: Vec<(String, String)>,
+    /// Templates instance for rendering templates
+    templates: Option<templates::Templates>,
 }
 
 impl Default for UltraApiApp {
@@ -1259,6 +1473,11 @@ impl UltraApiApp {
             routers: Vec::new(),
             middleware: MiddlewareBuilder::new(),
             lifecycle: Lifecycle::new(),
+            webhooks: HashMap::new(),
+            callbacks: Vec::new(),
+            mounted_apps: Vec::new(),
+            static_files: Vec::new(),
+            templates: None,
         }
     }
 
@@ -1501,6 +1720,72 @@ impl UltraApiApp {
 
     pub fn security_scheme(mut self, name: &str, scheme: openapi::SecurityScheme) -> Self {
         self.security_schemes.insert(name.to_string(), scheme);
+        self
+    }
+
+    /// Add a webhook to the OpenAPI spec.
+    /// 
+    /// Webhooks are defined at the API level (not tied to a specific route).
+    /// They will appear in the `webhooks` section of the OpenAPI spec.
+    ///
+    /// Note: whether the underlying route is available at runtime depends on routing mode.
+    /// With explicit routing (`.include(...)`), only included routes are registered.
+    /// With implicit routing (inventory auto-registration), any `#[get]`/`#[post]` route may be registered.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    /// use ultraapi::{RouteInfo, route};
+    ///
+    /// // Define a webhook route (won't be registered in router)
+    /// static WEBHOOK_ROUTE: RouteInfo = route!(GET "/webhook/payment" -> PaymentEvent, tags = ["webhooks"]);
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .webhook("paymentWebhook", &WEBHOOK_ROUTE);
+    /// ```
+    pub fn webhook(mut self, name: &str, route: &'static RouteInfo) -> Self {
+        let tags: Vec<String> = route.tags.iter().map(|s| s.to_string()).collect();
+        let sec: Vec<&str> = route.security.to_vec();
+        let operation = Self::build_operation(route, tags, &sec);
+        let mut path_item = openapi::PathItem::new();
+        path_item.insert(route.method.to_lowercase(), operation);
+        self.webhooks.insert(name.to_string(), path_item);
+        self
+    }
+
+    /// Add a callback to an existing route's OpenAPI operation.
+    /// 
+    /// Callbacks are attached to a specific owner route and will appear in the
+    /// `callbacks` section of that route's operation in the OpenAPI spec.
+    ///
+    /// Note: whether the callback route is available at runtime depends on routing mode.
+    /// With explicit routing (`.include(...)`), only included routes are registered.
+    /// With implicit routing (inventory auto-registration), any `#[get]`/`#[post]` route may be registered.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    /// use ultraapi::{RouteInfo, route};
+    ///
+    /// static OWNER_ROUTE: RouteInfo = route!(POST "/subscriptions" -> Subscription, tags = ["subscriptions"]);
+    /// static CALLBACK_ROUTE: RouteInfo = route!(POST "/webhook/subscription" -> SubscriptionEvent, tags = ["callbacks"]);
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .callback(&OWNER_ROUTE, "subscriptionEvent", "{$request.body#/callbackUrl}", &CALLBACK_ROUTE);
+    /// ```
+    pub fn callback(
+        mut self,
+        owner: &'static RouteInfo,
+        callback_name: &str,
+        expression: &str,
+        callback_route: &'static RouteInfo,
+    ) -> Self {
+        self.callbacks.push((
+            owner,
+            callback_name.to_string(),
+            expression.to_string(),
+            callback_route,
+        ));
         self
     }
 
@@ -1802,6 +2087,85 @@ impl UltraApiApp {
         &self.lifecycle
     }
 
+    /// Mount a sub-application at the given path.
+    /// 
+    /// This is similar to FastAPI's sub-applications. The sub-app will have its own
+    /// `/docs` and `/openapi.json` endpoints available at `/<path>/docs` and `/<path>/openapi.json`.
+    /// 
+    /// Note: The sub-app's routes will NOT be included in the main app's OpenAPI spec.
+    /// The sub-app's deps will be merged into the main app's dependency injection container.
+    /// 
+    /// # Example
+    /// 
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    /// 
+    /// // Create a sub-app
+    /// let sub_app = UltraApiApp::new()
+    ///     .title("Sub API")
+    ///     .version("1.0.0");
+    /// 
+    /// // Mount it at /api
+    /// let app = UltraApiApp::new()
+    ///     .mount("/api", sub_app);
+    /// ```
+    pub fn mount(mut self, path: &str, mut sub_app: UltraApiApp) -> Self {
+        // Merge sub-app's deps into main app
+        for (type_id, dep) in sub_app.deps.drain() {
+            self.deps.insert(type_id, dep);
+        }
+        self.mounted_apps.push((path.to_string(), sub_app));
+        self
+    }
+
+    /// Serve static files from a directory.
+    /// 
+    /// # Example
+    /// 
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    /// 
+    /// let app = UltraApiApp::new()
+    ///     .static_files("/static", "./static");
+    /// ```
+    pub fn static_files(mut self, path: &str, dir: impl Into<String>) -> Self {
+        self.static_files.push((path.to_string(), dir.into()));
+        self
+    }
+
+    /// Set the templates directory for rendering HTML templates.
+    /// 
+    /// The templates will be registered as a dependency that can be injected via `Dep<Templates>`.
+    /// 
+    /// # Example
+    /// 
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    /// 
+    /// let app = UltraApiApp::new()
+    ///     .templates_dir("./templates");
+    /// 
+    /// // In a handler
+    /// #[get("/hello")]
+    /// async fn hello(templates: Dep<Templates>) -> impl IntoResponse {
+    ///     template_response(&templates, "hello.html", serde_json::json!({ "name": "World" }))
+    /// }
+    /// ```
+    pub fn templates_dir(mut self, dir: impl AsRef<Path>) -> Self {
+        match templates::Templates::new(dir) {
+            Ok(templates) => {
+                self.templates = Some(templates);
+                self
+            }
+            Err(e) => {
+                // For now, we'll just log and continue without templates
+                // In production, you might want to handle this differently
+                eprintln!("Warning: Failed to load templates: {}", e);
+                self
+            }
+        }
+    }
+
     /// Check if routers were explicitly included
     pub fn has_explicit_routes(&self) -> bool {
         !self.routers.is_empty()
@@ -1816,7 +2180,7 @@ impl UltraApiApp {
         resolved
     }
 
-    pub fn into_router(self) -> Router {
+    pub fn into_router(mut self) -> Router {
         let spec = self.generate_openapi_spec();
         let swagger_html = self.generate_swagger_html();
         let has_explicit = self.has_explicit_routes();
@@ -1842,6 +2206,12 @@ impl UltraApiApp {
 
         // Store the depends resolver for later use
         let depends_resolver = self.depends_resolver;
+
+        // Register templates as a dependency if configured
+        let templates = self.templates;
+        if let Some(tmpl) = templates {
+            all_deps.insert(TypeId::of::<templates::Templates>(), Arc::new(tmpl));
+        }
 
         let state = AppState {
             deps: Arc::new(all_deps),
@@ -1878,6 +2248,15 @@ impl UltraApiApp {
                 async move { (StatusCode::OK, [("content-type", "text/html")], html) }
             }),
         );
+
+        // Add static files
+        for (path, dir) in &self.static_files {
+            let static_service = tower_http::services::ServeDir::new(dir);
+            app = app.nest_service(path, static_service);
+        }
+
+        // Collect mounted apps before consuming self
+        let mounted_apps = std::mem::take(&mut self.mounted_apps);
 
         // Apply CORS if configured
         if let Some(ref cors_config) = self.middleware.cors_config {
@@ -1934,6 +2313,53 @@ impl UltraApiApp {
                         }
                     },
                 ));
+            }
+        }
+
+        // Add mounted sub-applications
+        // For each mounted app, we need to add its routes with the path prefix
+        // and set up its own /docs and /openapi.json handlers
+        for (path, mut sub_app) in mounted_apps {
+            // Get sub-app's resolved routes
+            let sub_resolved = sub_app.resolve_routes();
+            
+            // Add routes with path prefix
+            for r in sub_resolved {
+                let full_path = format!("{}{}", path, r.full_axum_path());
+                let method_router = (r.route_info.method_router_fn)();
+                app = app.route(&full_path, method_router);
+            }
+            
+            // Generate sub-app's OpenAPI spec and swagger HTML
+            let sub_spec = sub_app.generate_openapi_spec();
+            let sub_swagger = sub_app.generate_swagger_html();
+            let sub_spec_json = serde_json::to_string_pretty(&sub_spec.to_json_with_query_params(&sub_app.routers))
+                .unwrap_or_else(|_| "{}".to_string());
+            
+            let _sub_path_prefix = path.to_string();
+            let sub_spec_json_clone = sub_spec_json.clone();
+            app = app.route(
+                &format!("{}/openapi.json", path),
+                axum::routing::get(move || {
+                    let spec = sub_spec_json_clone.clone();
+                    async move { (StatusCode::OK, [("content-type", "application/json")], spec) }
+                }),
+            );
+            
+            let sub_swagger_clone = sub_swagger.clone();
+            app = app.route(
+                &format!("{}/docs", path),
+                axum::routing::get(move || {
+                    let html = sub_swagger_clone.clone();
+                    async move { (StatusCode::OK, [("content-type", "text/html")], html) }
+                }),
+            );
+            
+            // Add sub-app's static files with path prefix
+            for (sub_path, dir) in sub_app.static_files.drain(..) {
+                let full_path = format!("{}{}", path, sub_path);
+                let static_service = tower_http::services::ServeDir::new(dir);
+                app = app.nest_service(&full_path, static_service);
             }
         }
 
@@ -2182,12 +2608,17 @@ impl UltraApiApp {
         }
 
         let mut paths = HashMap::new();
+        // When explicit routers are used, `paths` keys are the resolved full path (prefix applied).
+        // We keep a mapping so we can attach callbacks to the correct operation.
+        let mut explicit_route_paths: HashMap<*const RouteInfo, String> = HashMap::new();
 
         if self.has_explicit_routes() {
             let resolved = self.resolve_routes();
             for r in &resolved {
                 let route = r.route_info;
                 let full_path = r.full_path();
+                explicit_route_paths.insert(route as *const RouteInfo, full_path.clone());
+
                 let tags = r.merged_tags();
                 let sec = r.merged_security();
                 let operation = Self::build_operation(route, tags, &sec);
@@ -2206,6 +2637,75 @@ impl UltraApiApp {
             }
         }
 
+        // Merge callbacks into the appropriate operations
+        // We need to find the owner route's operation and add the callback to it
+        // First, process explicit callbacks (added via .callback() method)
+        for (owner, callback_name, expression, callback_route) in &self.callbacks {
+            let owner_method = owner.method.to_lowercase();
+            let owner_path = if !explicit_route_paths.is_empty() {
+                explicit_route_paths
+                    .get(&(*owner as *const RouteInfo))
+                    .cloned()
+                    .unwrap_or_else(|| owner.path.to_string())
+            } else {
+                owner.path.to_string()
+            };
+
+            if let Some(path_item) = paths.get_mut(&owner_path) {
+                if let Some(operation) = path_item.get_mut(&owner_method) {
+                    // Build the callback operation
+                    let callback_tags: Vec<String> = callback_route.tags.iter().map(|s| s.to_string()).collect();
+                    let callback_sec: Vec<&str> = callback_route.security.to_vec();
+                    let callback_operation = Self::build_operation(callback_route, callback_tags, &callback_sec);
+                    
+                    // Create the callback PathItem
+                    let mut callback_path_item = openapi::PathItem::new();
+                    callback_path_item.insert(callback_route.method.to_lowercase(), callback_operation);
+                    
+                    // Add to operation's callbacks
+                    let mut callback = openapi::Callback::new();
+                    callback.insert(expression.clone(), callback_path_item);
+                    operation.callbacks.insert(callback_name.clone(), callback);
+                }
+            }
+        }
+
+        // Also process inventory-based callbacks (registered via #[callback(...)] attribute)
+        for callback_info in inventory::iter::<CallbackInfo> {
+            let owner: &RouteInfo = callback_info.owner;
+            let callback_name = callback_info.name;
+            let expression = callback_info.expression;
+            let callback_route = callback_info.route;
+
+            let owner_method = owner.method.to_lowercase();
+            let owner_path = if !explicit_route_paths.is_empty() {
+                explicit_route_paths
+                    .get(&(owner as *const RouteInfo))
+                    .cloned()
+                    .unwrap_or_else(|| owner.path.to_string())
+            } else {
+                owner.path.to_string()
+            };
+
+            if let Some(path_item) = paths.get_mut(&owner_path) {
+                if let Some(operation) = path_item.get_mut(&owner_method) {
+                    // Build the callback operation
+                    let callback_tags: Vec<String> = callback_route.tags.iter().map(|s| s.to_string()).collect();
+                    let callback_sec: Vec<&str> = callback_route.security.to_vec();
+                    let callback_operation = Self::build_operation(callback_route, callback_tags, &callback_sec);
+                    
+                    // Create the callback PathItem
+                    let mut callback_path_item = openapi::PathItem::new();
+                    callback_path_item.insert(callback_route.method.to_lowercase(), callback_operation);
+                    
+                    // Add to operation's callbacks
+                    let mut callback = openapi::Callback::new();
+                    callback.insert(expression.to_string(), callback_path_item);
+                    operation.callbacks.insert(callback_name.to_string(), callback);
+                }
+            }
+        }
+
         openapi::OpenApiSpec {
             openapi: "3.1.0".to_string(),
             info: openapi::Info {
@@ -2217,7 +2717,7 @@ impl UltraApiApp {
             },
             servers: self.servers.clone(),
             paths,
-            webhooks: HashMap::new(),
+            webhooks: self.webhooks.clone(),
             schemas,
             security_schemes: self.security_schemes.clone(),
         }

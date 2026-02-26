@@ -2,338 +2,336 @@
 
 [![crates.io](https://img.shields.io/crates/v/ultraapi.svg)](https://crates.io/crates/ultraapi)
 [![docs.rs](https://docs.rs/ultraapi/badge.svg)](https://docs.rs/ultraapi)
+[![CI](https://github.com/sylph-labs/ultraapi/actions/workflows/ci.yml/badge.svg)](https://github.com/sylph-labs/ultraapi/actions/workflows/ci.yml)
 
-FastAPIに影響を受けたRustウェブフレームワークで、自动的なOpenAPI/Swaggerドキュメント生成をサポートしています。
+> English README: [README.en.md](./README.en.md)
 
-## 特徴
+Rust で **FastAPI ライクな開発体験（DX）** を目指す、Axum ベースの Web フレームワークです。
 
-- **自动OpenAPI生成**: すべてのルートが自動的にOpenAPI 3.1格式でドキュメント化されます
-- **Swagger UI**: ビルトインの `/docs` エンドポイントがインタラクティブなAPIドキュメントを提供します
-- **型安全**: Rustのコンパイル時チェックによる完全な型推論
-- **依存性注入**: `Dep<T>`、`State<T>`、および `Depends<T>` エクストラクターの第一级サポート
-- **Yield依赖**: FastAPIスタイルのジェネレーター依赖清理フックとスコープ管理（関数/リクエスト）
-- **バリデーション**: `#[validate]` 属性によるビルトインvalidation（email、min/max length、pattern、数値範囲）
-- **Router構成**: プレフィックス連結とtag/security伝播によるネストされたrouter
-- **Resultハンドラー**: 適切なHTTPステータスコードを持つ `Result<T, ApiError>` の自动処理
-- **Bearer Auth**: 簡単なJWT bearer認証セットアップ
+- コンセプト: **Rust 性能 × FastAPI DX**
+- OpenAPI: `GET /openapi.json`
+- Docs UI: `GET /docs`（既定は Embedded: Scalar）
 
-## Quick Start
+## 特徴（MVP）
+
+- **FastAPI 風のルート定義**: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
+- **serde/schemars から OpenAPI 自動生成**: `#[api_model]` の型定義から schema を生成
+- **/docs 組み込み**: そのまま API リファレンス UI を提供（CDN Swagger UI も可）
+- **自動バリデーション**: `#[validate(...)]` で 422（Unprocessable Entity）を返却
+- **DI（依存性注入）**: `Dep<T>`, `State<T>`, `Depends<T>`
+- **Router 合成**: prefix / tags / security をルーター単位で合成
+- **WebSocket / SSE**: `#[ws]`, `#[sse]`
+- **Lifespan hooks**: startup/shutdown
+
+## インストール
+
+```toml
+[dependencies]
+ultraapi = "0.1"
+```
+
+## クイックスタート
+
+### 1) モデル定義（OpenAPI + Validation）
 
 ```rust
 use ultraapi::prelude::*;
 
+/// ユーザー作成リクエスト
 #[api_model]
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone)]
+struct CreateUser {
+    #[validate(min_length = 1, max_length = 100)]
+    name: String,
+
+    #[validate(email)]
+    email: String,
+}
+
+/// ユーザー
+#[api_model]
+#[derive(Debug, Clone)]
 struct User {
     id: i64,
     name: String,
     email: String,
 }
+```
+
+### 2) ルート定義（FastAPI 風）
+
+```rust
+use ultraapi::prelude::*;
 
 #[post("/users")]
-async fn create_user(user: User) -> User {
-    User {
-        id: 1,
-        name: user.name,
-        email: user.email,
-    }
+async fn create_user(body: CreateUser) -> User {
+    User { id: 1, name: body.name, email: body.email }
 }
 
 #[get("/users/{id}")]
 async fn get_user(id: i64) -> Result<User, ApiError> {
-    Ok(User {
-        id,
-        name: "Alice".into(),
-        email: "alice@example.com".into(),
-    })
+    Ok(User { id, name: "Alice".into(), email: "alice@example.com".into() })
 }
+```
 
-#[derive(Clone)]
-struct Database;
+### 3) Router 合成 + 起動
 
-impl Database {
-    async fn get_user(&self, id: i64) -> Option<User> {
-        Some(User { id, name: "Alice".into(), email: "alice@example.com".into() })
-    }
+`#[get]` などのマクロは、ルート参照（`__HAYAI_ROUTE_<FN>`）を自動生成します。
+
+```rust
+use ultraapi::prelude::*;
+
+fn api() -> UltraApiRouter {
+    UltraApiRouter::new("/api")
+        .tag("users")
+        .route(__HAYAI_ROUTE_CREATE_USER)
+        .route(__HAYAI_ROUTE_GET_USER)
 }
 
 #[tokio::main]
 async fn main() {
-    let app = UltraApiApp::new()
+    UltraApiApp::new()
         .title("My API")
         .version("1.0.0")
-        .dep(Database)
-        .route(create_user)
-        .route(get_user);
-
-    app.serve("0.0.0.0:3000").await;
+        .include(api())
+        .serve("0.0.0.0:3000")
+        .await;
 }
 ```
+
+起動後:
+
+- OpenAPI: `GET /openapi.json`
+- Docs: `GET /docs`
 
 ## 主要マクロ
 
-- `#[get(path)]` - GETエンドポイントを登録
-- `#[post(path)]` - POSTエンドポイントを登録
-- `#[put(path)]` - PUTエンドポイントを登録
-- `#[delete(path)]` - DELETEエンドポイントを登録
-- `#[api_model]` - struct/enumに対してvalidationとOpenAPIスキーマを生成
-- `#[status(N)]` - ルートにカスタムHTTPステータスコードを設定
-- `#[tag("name")]OpenAPIグループ化のtagを追加
-- `#[security("scheme")]セキュリティschemeをルートに適用
-- `#[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")]` - レスポンスのcontent-typeを設定
-- `#[summary("...")]` - OpenAPI summaryを設定
-- `#[deprecated]` - ルートを非推奨としてマーク
-- `#[external_docs(url = "...", description = "...")]` - 外部ドキュメントURLを設定
+- ルート: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
+- モデル: `#[api_model]`
+- WebSocket: `#[ws]`
+- SSE: `#[sse]`
 
-## Validation
+### ルート向け追加属性
 
-UltraAPIは `#[api_model]` で定義されたstructに対して多种多様なvalidation属性をサポートしています:
+- `#[status(200)]` など: 成功時ステータスコード
+- `#[tag("name")]`: OpenAPI タグ
+- `#[security("bearer")]`: セキュリティ要件（OpenAPI と auth middleware に反映）
+- `#[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")]`: content-type
+- `#[response_model(...)]`: response shaping（include/exclude/by_alias）
+- `#[summary("...")]`: OpenAPI summary
+- `#[external_docs(url = "...", description = "...")]`: OpenAPI externalDocs
+- `#[deprecated]`: OpenAPI deprecated
+
+### モデルフィールド向け属性
+
+`#[api_model]` を付けたstructのフィールドには以下の属性が使えます:
+
+- `#[read_only]`: レスポンス에만 포함되고、リクエストには 포함되지まないフィールド（OpenAPI で `readOnly: true` を出力）
+- `#[write_only]`: リクエストだけに 포함되고、レスポンスには 포함되지まないフィールド（OpenAPI で `writeOnly: true` を出力）
+- `#[alias("name")]`: フィールドのシリアライズ名を指定（serde の `rename` 相当）
+
+#### read_only / write_only の使用例
 
 ```rust
 use ultraapi::prelude::*;
 
+/// ユーザー作成リクエスト（パスワードのみリクエスト時に必要）
 #[api_model]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-struct User {
-    /// メールアドレス
-    #[validate(email)]
-    email: String,
-    
-    /// ユーザー名（3-20文字）
-    #[validate(min_length = 3)]
-    #[validate(max_length = 20)]
-    username: String,
-    
-    /// パスワード（8文字以上）
-    #[validate(min_length = 8)]
+#[derive(Debug, Clone)]
+struct CreateUser {
+    /// ユーザー名
+    name: String,
+
+    /// パスワード（リクエスト時のみ、レスポンスでは返さない）
+    #[write_only]
     password: String,
-    
-    /// 年齢（0-150）
-    #[validate(minimum = 0)]
-    #[validate(maximum = 150)]
-    age: i32,
-    
-    /// ユーザーID（英数字）
-    #[validate(pattern = "^[a-zA-Z0-9_]+$")]
-    user_id: String,
+}
+
+/// ユーザーレスポンス（IDはレスポンスでのみ返す）
+#[api_model]
+#[derive(Debug, Clone)]
+struct User {
+    /// ユーザーID（レスポンスのみ）
+    #[read_only]
+    id: i64,
+
+    /// ユーザー名
+    name: String,
 }
 ```
 
-### 利用可能なValidation属性
+- `#[read_only]` を付けたフィールドは、リクエストボディのデシリアライズ時に無視されます
+- `#[write_only]` を付けたフィールドは、レスポンスのシリアライズ時に除外されます
+- OpenAPI の Schema プロパティにはそれぞれ `readOnly: true` / `writeOnly: true` が出力されます
 
-- `#[validate(email)]` - メールアドレスとしてvalidation
-- `#[validate(min_length = N)]` - 最小文字列長
-- `#[validate(max_length = N)]` - 最大文字列長
-- `#[validate(minimum = N)]` - 最小数値
-- `#[validate(maximum = N)]` - 最大数値
-- `#[validate(pattern = "regex")]` - パターンマッチ
-- `#[validate(min_items = N)]` - 最小配列長
+## Swagger UI / Docs
 
-## Response Model Shaping
+既定は Embedded（Scalar）です。Swagger UI を CDN から読み込みたい場合:
 
-UltraAPIはFastAPIスタイルのresponse model shapingをサポートしています:
+```rust
+use ultraapi::prelude::*;
+
+let app = UltraApiApp::new().swagger_cdn("https://unpkg.com/swagger-ui-dist@5");
+```
+
+## Webhooks と Callbacks（OpenAPI）
+
+UltraAPI は OpenAPI 3.1 の **webhooks** と **callbacks** をサポートしています。
+
+- `webhooks` は OpenAPI spec のトップレベル `webhooks` に出力
+- `callbacks` は特定の operation の `callbacks` に出力
+
+これらの API は **OpenAPI への出力** を追加します（runtime router への登録は行いません）。
+ただし、最終的にルートが公開されるかどうかは **アプリのルーティング方式** に依存します。
+
+- **explicit routing（`.include(...)` を使う場合）**: include していないルートは runtime に登録されません
+- **implicit routing（inventory 全登録を使う場合）**: `#[get]`/`#[post]` などで定義したルートは runtime に登録されます
+
+「OpenAPI にだけ載せたい」場合は、explicit routing を使い、webhook/callback 用ルートを `include(...)` しない運用にしてください。
+
+### Webhooks
 
 ```rust
 use ultraapi::prelude::*;
 
 #[api_model]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-struct UserProfile {
+#[derive(Debug, Clone)]
+struct PaymentEvent {
+    event_type: String,
+    amount: f64,
+}
+
+#[post("/webhooks/payment")]
+#[tag("webhooks")]
+async fn payment_webhook(body: PaymentEvent) -> PaymentEvent {
+    body
+}
+
+let app = UltraApiApp::new()
+    .webhook("payment", __HAYAI_ROUTE_PAYMENT_WEBHOOK);
+```
+
+### Callbacks
+
+```rust
+use ultraapi::prelude::*;
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct Subscription {
     id: i64,
-    username: String,
-    email: String,
-    password_hash: String,
-    created_at: String,
-    is_admin: bool,
+    plan: String,
 }
 
-// 特定のフィールドのみレスポンスに含める
-#[get("/users/{id}/public", response_model(include={"id", "username"}))]
-async fn get_public_profile(id: i64) -> UserProfile { ... }
+#[api_model]
+#[derive(Debug, Clone)]
+struct SubscriptionEvent {
+    event_type: String,
+    subscription_id: i64,
+}
 
-// 敏感なフィールドをレスポンスから除外
-#[get("/users/{id}/profile", response_model(exclude={"password_hash"}))]
-async fn get_user_profile(id: i64) -> UserProfile { ... }
+#[post("/subscriptions")]
+async fn create_subscription(body: Subscription) -> Subscription {
+    body
+}
 
-// alias名を使用（シリアライズ用）
-#[get("/users/{id}/api", response_model(by_alias=true))]
-async fn get_user_api(id: i64) -> UserProfile { ... }
+#[post("/webhooks/subscription")]
+async fn subscription_callback(body: SubscriptionEvent) -> SubscriptionEvent {
+    body
+}
+
+let app = UltraApiApp::new().callback(
+    __HAYAI_ROUTE_CREATE_SUBSCRIPTION,
+    "subscriptionEvent",
+    "{$request.body#/callbackUrl}",
+    __HAYAI_ROUTE_SUBSCRIPTION_CALLBACK,
+);
 ```
 
-## フィールド属性
+## バリデーション
 
-- `#[alias("name")]` - シリアライズ時のフィールド名を変更
-- `#[skip_serializing]` - シリアライズをスキップ
-- `#[skip_deserializing]` - デシリアライズをスキップ
-- `#[skip]` - シリアライズとデシリアライズの双方をスキップ
-- `#[read_only]` - レスポンスのみに含める（リクエストボディには含まない）
-- `#[write_only]` - リクエストのみに含める（レスポンスには含まない）
+`#[api_model]` を付けた型に対して、以下の属性が利用できます:
 
-## 依存性の使い方
+- `#[validate(email)]`
+- `#[validate(min_length = N)]`
+- `#[validate(max_length = N)]`
+- `#[validate(minimum = N)]`
+- `#[validate(maximum = N)]`
+- `#[validate(pattern = "...")]`
+- `#[validate(min_items = N)]`
 
-UltraAPIは3種類の依赖注入パターンをサポートしています:
+## 依存性注入（DI）
 
-### 1. `Dep<T>` - 简单的依赖注入
+- `Dep<T>` / `State<T>`: アプリに登録した依存性を取り出す
+- `Depends<T>`: FastAPI 風の依存性（関数ベース）
+- `yield_depends`: cleanup を持つ依存性（scope: Function/Request）
+
+## Sub Applications（mount）
+
+UltraAPI は FastAPI ライクなサブアプリケーション（サブアプリ）をサポートしています。
 
 ```rust
 use ultraapi::prelude::*;
 
-struct Database;
+// サブアプリを作成
+let sub_app = UltraApiApp::new()
+    .title("Sub API")
+    .version("1.0.0");
 
-#[derive(Clone)]
-struct AppState {
-    db: Database,
-}
-
-#[get("/users")]
-async fn get_users(dep: Dep<Database>) -> String {
-    // Database を使用
-    "users".to_string()
-}
-
-#[tokio::main]
-async fn main() {
-    let app = UltraApiApp::new()
-        .dep(Database)
-        .route(get_users);
-}
-```
-
-### 2. `State<T>` - 状态注入
-
-```rust
-use ultraapi::prelude::*;
-
-#[derive(Clone)]
-struct Config {
-    api_key: String,
-}
-
-#[get("/config")]
-async fn get_config(state: State<Config>) -> String {
-    state.api_key.clone()
-}
-```
-
-### 3. `Depends<T>` - FastAPIスタイルの依赖
-
-```rust
-use ultraapi::prelude::*;
-
-struct CurrentUser {
-    user_id: i64,
-    username: String,
-}
-
-async fn get_current_user() -> CurrentUser {
-    // 认证ロジック
-    CurrentUser { user_id: 1, username: "alice".into() }
-}
-
-#[get("/profile")]
-async fn get_profile(user: Depends<CurrentUser>) -> String {
-    format!("Hello, {}!", user.username)
-}
-```
-
-### Yield依赖（清理フック付き）
-
-```rust
-use ultraapi::prelude::*;
-use std::sync::Arc;
-
-struct DatabasePool { connection_string: String }
-
-#[async_trait::async_trait]
-impl Generator for DatabasePool {
-    type Output = Self;
-    type Error = DependencyError;
-
-    async fn generate(self: Arc<Self>, _scope: Scope) -> Result<Self::Output, Self::Error> {
-        Ok(Arc::try_unwrap(self).unwrap_or_else(|a| (*a).clone()))
-    }
-
-    async fn cleanup(self: Arc<Self>) -> Result<(), Self::Error> {
-        println!("データベース接続を閉じています");
-        Ok(())
-    }
-}
-
-// 関数スコープ（清理はレスポンスの前に実行）
+// メインアプリにマウント
 let app = UltraApiApp::new()
-    .yield_depends(Arc::new(DatabasePool { connection_string: "...".into() }), Scope::Function);
-
-// リクエストスコープ（清理はレスポンスの後に実行）
-let app = UltraApiApp::new()
-    .yield_depends(Arc::new(DatabasePool { connection_string: "...".into() }), Scope::Request);
+    .mount("/api", sub_app);
 ```
 
-## OpenAPI / Swagger UI
+サブアプリは以下の特徴を持ちます:
+- 独自の `/docs` と `/openapi.json` エンドポイント（`/api/docs`, `/api/openapi.json`）
+- メインアプリの OpenAPI にはサブアプリのルートは含まれません（分離）
+- メインアプリと依存性を共有します
 
-UltraAPIは自动的にOpenAPI 3.1ドキュメントを生成します:
+## Static Files
 
-### エンドポイント
-
-- `GET /openapi.json` - 生のOpenAPI 3.1仕様
-- `GET /docs` - Swagger UI
-
-### セキュリティscheme
+静的ファイル（画像、CSS、JS など）を配信できます:
 
 ```rust
 use ultraapi::prelude::*;
 
-// Bearer認証 (JWT)
 let app = UltraApiApp::new()
-    .bearer_auth();
-
-// API Key認証
-let app = UltraApiApp::new()
-    .api_key("apiKeyAuth", "X-API-Key", "header");
-
-// OAuth2 - Implicit Flow
-let app = UltraApiApp::new()
-    .oauth2_implicit(
-        "oauth2Implicit",
-        "https://example.com/authorize",
-        [("read", "読み取りアクセス"), ("write", "書き込みアクセス")],
-    );
-
-// ルートにセキュリティを適用
-#[get("/protected")]
-#[security("oauth2Implicit")]
-async fn protected_route() -> String {
-    "秘密のデータ".to_string()
-}
+    .static_files("/static", "./static");
 ```
 
-## Router
+- 第1引数: URL パスプレフィックス（例: `/static`）
+- 第2引数: 配信するディレクトリのパス
 
-UltraAPIはネストされたrouterをサポートしています:
+## Templates
+
+HTML テンプレート（Jinja2 形式）をレンダリングできます:
 
 ```rust
 use ultraapi::prelude::*;
+use ultraapi::templates::{Templates, template_response};
 
+// テンプレートディレクトリを設定
+let app = UltraApiApp::new()
+    .templates_dir("./templates");
+
+// ハンドラーでテンプレートを使用
 #[get("/hello")]
-async fn hello() -> String {
-    "Hello".to_string()
+async fn hello(templates: Dep<Templates>) -> impl IntoResponse {
+    template_response(&templates, "hello.html", serde_json::json!({ "name": "World" }))
 }
-
-#[get("/world")]
-async fn world() -> String {
-    "World".to_string()
-}
-
-// ネストされたrouter
-let api_router = Router::new()
-    .route(hello)
-    .route(world);
-
-let app = UltraApiApp::new()
-    .title("My API")
-    .version("1.0.0")
-    .router("/api/v1", api_router);
 ```
 
-## License
+テンプレート機能:
+- `Templates::new(dir)` - テンプレートディレクトリからTemplatesを作成
+- `Templates::render(name, context)` - テンプレートをレンダリング
+- `template_response(templates, name, context)` - HTMLレスポンスを生成
+- `TemplateResponse` 型は `IntoResponse` を実装し、自動的に `text/html` content-type を設定
+
+## Examples
+
+- `examples/ultraapi-example`
+- `examples/grpc-example`
+
+## ライセンス
 
 MIT
