@@ -13,7 +13,7 @@ Rust で **FastAPI ライクな開発体験（DX）** を目指す、Axum ベー
 - Docs UI: `GET /docs`（既定は Embedded: Scalar）
 - ReDoc UI: `GET /redoc`
 
-## 実装済み機能
+## 特徴
 
 - **FastAPI 風のルート定義**: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
 - **serde/schemars から OpenAPI 自動生成**: `#[api_model]` の型定義から schema を生成

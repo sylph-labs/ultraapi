@@ -13,7 +13,7 @@ A FastAPI-inspired Rust web framework with automatic OpenAPI/Swagger documentati
 - **Docs UI**: `GET /docs` (default: Embedded Scalar)
 - **ReDoc UI**: `GET /redoc`
 
-## Implemented Features
+## Features
 
 - **FastAPI-style route definitions**: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
 - **Automatic OpenAPI generation from serde/schemars**: Generate schemas from `#[api_model]` type definitions
