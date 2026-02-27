@@ -508,3 +508,181 @@ fn test_file_response_from_vec() {
     let response: FileResponse = bytes.clone().into();
     assert_eq!(response.bytes(), &bytes);
 }
+
+// --- Redirect Response Tests ---
+
+/// Test redirect endpoint
+#[get("/test-redirect")]
+#[response_class("redirect")]
+async fn test_redirect_handler() -> RedirectResponse {
+    RedirectResponse::new("/new-location")
+}
+
+/// Redirect endpoint (default 307)
+#[get("/redirect")]
+#[response_class("redirect")]
+async fn redirect_default() -> RedirectResponse {
+    RedirectResponse::new("/new-location")
+}
+
+/// Redirect endpoint with custom status 301
+#[get("/redirect/301")]
+#[response_class("redirect")]
+async fn redirect_permanent() -> RedirectResponse {
+    RedirectResponse::new("https://example.com/new-location")
+        .status(301)
+}
+
+/// Redirect endpoint with custom status 302
+#[get("/redirect/302")]
+#[response_class("redirect")]
+async fn redirect_found() -> RedirectResponse {
+    RedirectResponse::new("/other-page")
+        .status(302)
+}
+
+// --- JSON endpoint with content_type override via response_model ---
+
+/// JSON endpoint with custom content-type override
+#[get("/json/custom-content-type")]
+#[response_model(content_type = "text/plain")]
+async fn json_custom_content_type() -> User {
+    User {
+        id: 100,
+        name: "Custom Content Type".into(),
+    }
+}
+
+// --- Runtime Tests ---
+
+#[tokio::test]
+async fn test_redirect_status_and_location() {
+    let base = spawn_app().await;
+    // Wait a bit for the server to be ready
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Disable automatic redirect following to test the redirect response itself
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let resp = client.get(&format!("{base}/test-redirect")).send().await.unwrap();
+    let status = resp.status();
+    let location = resp.headers().get("location").map(|h| h.to_str().unwrap().to_string());
+    eprintln!("Status: {}, Location: {:?}", status, location);
+    // Default is 307 Temporary Redirect
+    assert_eq!(status, 307);
+    // Check Location header
+    assert_eq!(location.unwrap(), "/new-location");
+}
+
+#[tokio::test]
+async fn test_redirect_301() {
+    let base = spawn_app().await;
+    // Disable automatic redirect following
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let resp = client.get(&format!("{base}/redirect/301")).send().await.unwrap();
+    let status = resp.status();
+    let location = resp.headers().get("location").map(|h| h.to_str().unwrap().to_string());
+    // 301 Moved Permanently
+    assert_eq!(status, 301);
+    // Check Location header
+    assert_eq!(location.unwrap(), "https://example.com/new-location");
+}
+
+#[tokio::test]
+async fn test_redirect_302() {
+    let base = spawn_app().await;
+    // Disable automatic redirect following
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let resp = client.get(&format!("{base}/redirect/302")).send().await.unwrap();
+    let status = resp.status();
+    let location = resp.headers().get("location").map(|h| h.to_str().unwrap().to_string());
+    // 302 Found
+    assert_eq!(status, 302);
+    // Check Location header
+    assert_eq!(location.unwrap(), "/other-page");
+}
+
+// --- OpenAPI Tests for Redirect ---
+
+#[tokio::test]
+async fn test_openapi_redirect_content_type() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let spec: serde_json::Value = resp.json().await.unwrap();
+    
+    // Print all paths to debug
+    let paths = spec["paths"].as_object().unwrap();
+    eprintln!("All paths: {:?}", paths.keys().collect::<Vec<_>>());
+    
+    // Check /redirect endpoint
+    let get_op = &spec["paths"]["/redirect"]["get"];
+    let response = &get_op["responses"]["200"]["content"];
+    
+    // Redirect should have JSON content type (per our implementation)
+    assert!(response.get("application/json").is_some());
+}
+
+// --- OpenAPI Tests for content_type override ---
+
+#[tokio::test]
+async fn test_openapi_content_type_override() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let spec: serde_json::Value = resp.json().await.unwrap();
+    
+    // Check /json/custom-content-type endpoint
+    let get_op = &spec["paths"]["/json/custom-content-type"]["get"];
+    let response = &get_op["responses"]["200"]["content"];
+    
+    // Should have text/plain (overridden) instead of application/json
+    assert!(response.get("text/plain").is_some());
+    assert!(response.get("application/json").is_none());
+}
+
+// --- ResponseClass::Redirect tests ---
+
+#[test]
+fn test_response_class_redirect_content_type() {
+    assert_eq!(ResponseClass::Redirect.content_type(), "application/json");
+}
+
+// --- RedirectResponse unit tests ---
+
+#[test]
+fn test_redirect_response_new() {
+    let response = RedirectResponse::new("/test-location");
+    assert_eq!(response.get_location(), "/test-location");
+    assert_eq!(response.get_status(), axum::http::StatusCode::TEMPORARY_REDIRECT);
+}
+
+#[test]
+fn test_redirect_response_builder_location() {
+    let response = RedirectResponse::new("/initial")
+        .location("/new-location");
+    assert_eq!(response.get_location(), "/new-location");
+}
+
+#[test]
+fn test_redirect_response_builder_status() {
+    let response = RedirectResponse::new("/location")
+        .status(301);
+    assert_eq!(response.get_status(), axum::http::StatusCode::MOVED_PERMANENTLY);
+}
+
+#[test]
+fn test_redirect_response_builder_all() {
+    let response = RedirectResponse::new("/start")
+        .location("https://example.com/end")
+        .status(308);
+    assert_eq!(response.get_location(), "https://example.com/end");
+    assert_eq!(response.get_status(), axum::http::StatusCode::PERMANENT_REDIRECT);
+}

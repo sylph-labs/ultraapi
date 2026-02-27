@@ -543,9 +543,10 @@ struct ApiUser {
 #[test]
 fn test_response_model_include() {
     let options = ultraapi::ResponseModelOptions {
-        include: Some(vec!["id", "name"]),
+        include: Some(&["id", "name"]),
         exclude: None,
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -568,8 +569,9 @@ fn test_response_model_include() {
 fn test_response_model_exclude() {
     let options = ultraapi::ResponseModelOptions {
         include: None,
-        exclude: Some(vec!["password_hash", "internal_note"]),
+        exclude: Some(&["password_hash", "internal_note"]),
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -594,9 +596,10 @@ fn test_response_model_exclude() {
 fn test_response_model_include_takes_precedence() {
     // When both include and exclude are specified, include takes precedence
     let options = ultraapi::ResponseModelOptions {
-        include: Some(vec!["id", "username"]),
-        exclude: Some(vec!["email"]),
+        include: Some(&["id", "username"]),
+        exclude: Some(&["email"]),
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -623,8 +626,9 @@ fn test_response_model_nested_include_exclude() {
     let options = ultraapi::ResponseModelOptions {
         // Using only exclude - this will filter password_hash at all levels
         include: None,
-        exclude: Some(vec!["password_hash", "total", "status"]),
+        exclude: Some(&["password_hash", "total", "status"]),
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -660,9 +664,10 @@ fn test_response_model_nested_include_exclude() {
 #[test]
 fn test_response_model_array_handling() {
     let options = ultraapi::ResponseModelOptions {
-        include: Some(vec!["id", "name"]),
+        include: Some(&["id", "name"]),
         exclude: None,
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!([
@@ -695,6 +700,7 @@ fn test_response_model_by_alias() {
         include: None,
         exclude: None,
         by_alias: true,
+        content_type: None,
     };
     
     // Without include/exclude, the value passes through unchanged
@@ -734,9 +740,10 @@ fn test_response_model_empty_options() {
 #[test]
 fn test_response_model_no_matching_include() {
     let options = ultraapi::ResponseModelOptions {
-        include: Some(vec!["nonexistent"]),
+        include: Some(&["nonexistent"]),
         exclude: None,
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -755,8 +762,9 @@ fn test_response_model_no_matching_include() {
 fn test_response_model_all_excluded() {
     let options = ultraapi::ResponseModelOptions {
         include: None,
-        exclude: Some(vec!["id", "name", "everything"]),
+        exclude: Some(&["id", "name", "everything"]),
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -782,6 +790,7 @@ fn test_apply_with_aliases_by_alias_true() {
         include: None,
         exclude: None,
         by_alias: true,
+        content_type: None,
     };
     
     // Simulate a serialized value with field names (from serde)
@@ -808,6 +817,7 @@ fn test_apply_with_aliases_by_alias_false() {
         include: None,
         exclude: None,
         by_alias: false,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -829,9 +839,10 @@ fn test_apply_with_aliases_by_alias_false() {
 fn test_apply_with_aliases_include_by_alias_true() {
     // Test include + by_alias=true
     let options = ultraapi::ResponseModelOptions {
-        include: Some(vec!["user_id", "display_name"]),
+        include: Some(&["user_id", "display_name"]),
         exclude: None,
         by_alias: true,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -857,8 +868,9 @@ fn test_apply_with_aliases_exclude_by_alias_true() {
     // Test exclude + by_alias=true
     let options = ultraapi::ResponseModelOptions {
         include: None,
-        exclude: Some(vec!["password_hash"]),
+        exclude: Some(&["password_hash"]),
         by_alias: true,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({
@@ -888,6 +900,7 @@ fn test_apply_with_aliases_nested() {
         include: None,
         exclude: None,
         by_alias: true,
+        content_type: None,
     };
     
     // Simulate a nested structure similar to what would come from serialization
@@ -924,6 +937,7 @@ fn test_apply_with_aliases_array() {
         include: None,
         exclude: None,
         by_alias: true,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!([
@@ -948,6 +962,7 @@ fn test_apply_with_aliases_no_type_matching() {
         include: None,
         exclude: None,
         by_alias: true,
+        content_type: None,
     };
     
     let value = ultraapi::serde_json::json!({

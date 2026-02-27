@@ -183,6 +183,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let mut include_fields: Option<Vec<String>> = None;
     let mut exclude_fields: Option<Vec<String>> = None;
     let mut by_alias: bool = false;
+    // Response model content-type override
+    let mut response_model_content_type: Option<String> = None;
     // Response class (default: json)
     let mut response_class: Option<String> = None;
     // OpenAPI metadata extensions
@@ -278,9 +280,25 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         by_alias = false;
                     }
                 }
+                
+                // Extract content_type
+                if let Some(start) = tokens_str.find("content_type") {
+                    let after_ct = &tokens_str[start..];
+                    if let Some(eq_pos) = after_ct.find('=') {
+                        let after_eq = &after_ct[eq_pos+1..];
+                        // Find the end of the string value (next comma, closing paren, or end)
+                        let end_pos = after_eq.find(|c: char| c == ',' || c == ')')
+                            .map(|p| p)
+                            .unwrap_or(after_eq.len());
+                        let ct_value = after_eq[..end_pos].trim().trim_matches('"').trim();
+                        if !ct_value.is_empty() {
+                            response_model_content_type = Some(ct_value.to_string());
+                        }
+                    }
+                }
             }
         } else if attr.path().is_ident("response_class") {
-            // Parse response_class("json"|"html"|"text"|"binary"|"stream"|"xml"|"file")
+            // Parse response_class("json"|"html"|"text"|"binary"|"stream"|"xml"|"file"|"redirect"|"cookie")
             if let syn::Meta::List(list) = &attr.meta {
                 let tokens = list.tokens.clone();
                 if let Ok(lit) = syn::parse2::<LitStr>(tokens) {
@@ -503,6 +521,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                                 let #pat: ultraapi::axum::extract::Query<#inner> =
                                     ultraapi::axum::extract::Query::from_request_parts(&mut parts, &state).await
                                     .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid query parameters: {}", e)))?;
+                                // Validate the inner type if it implements Validate (api_model types)
+                                if let Err(e) = (#pat).0.validate_ext() {
+                                    return Err(ultraapi::ApiError::validation_error(e));
+                                }
                             };
                             call_args.push(quote!(#pat));
                         }
@@ -672,14 +694,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let response_shaping_expr = if has_response_model {
         let include_expr = if let Some(ref fields) = include_fields {
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-            quote! { Some(vec![#(#field_refs),*]) }
+            quote! { Some(&[#(#field_refs),*] as &'static [&'static str]) }
         } else {
             quote! { None }
         };
         
         let exclude_expr = if let Some(ref fields) = exclude_fields {
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-            quote! { Some(vec![#(#field_refs),*]) }
+            quote! { Some(&[#(#field_refs),*] as &'static [&'static str]) }
         } else {
             quote! { None }
         };
@@ -698,6 +720,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 include: #include_expr,
                 exclude: #exclude_expr,
                 by_alias: #by_alias_expr,
+                content_type: None, // content_type only affects OpenAPI, not runtime
             };
             let value = shaping_options.apply_with_aliases(value, #type_name_expr, #by_alias);
         }
@@ -823,6 +846,35 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 }
             }
         }
+        // Redirect response - returns RedirectResponse which handles Location header
+        Some("redirect") => {
+            if is_result_return {
+                quote! {
+                    let result = #fn_name(#(#call_args),*).await?;
+                    Ok(result.into_response())
+                }
+            } else {
+                quote! {
+                    let result = #fn_name(#(#call_args),*).await;
+                    Ok(result.into_response())
+                }
+            }
+        }
+        // Cookie response - returns CookieResponse which handles Set-Cookie headers
+        // The return type should implement IntoResponse directly
+        Some("cookie") => {
+            if is_result_return {
+                quote! {
+                    let result = #fn_name(#(#call_args),*).await?;
+                    Ok(result.into_response())
+                }
+            } else {
+                quote! {
+                    let result = #fn_name(#(#call_args),*).await;
+                    Ok(result.into_response())
+                }
+            }
+        }
         // JSON response (default)
         _ => {
             if success_status == 204 {
@@ -900,14 +952,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     // Generate ResponseModelOptions expression
     let include_expr = if let Some(ref fields) = include_fields {
         let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-        quote! { Some(vec![#(#field_refs),*]) }
+        quote! { Some(&[#(#field_refs),*] as &'static [&'static str]) }
     } else {
         quote! { None }
     };
     
     let exclude_expr = if let Some(ref fields) = exclude_fields {
         let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
-        quote! { Some(vec![#(#field_refs),*]) }
+        quote! { Some(&[#(#field_refs),*] as &'static [&'static str]) }
     } else {
         quote! { None }
     };
@@ -918,11 +970,17 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         quote! { false }
     };
 
+    let response_model_content_type_expr = match &response_model_content_type {
+        Some(ct) => quote! { Some(#ct) },
+        None => quote! { None },
+    };
+
     let response_model_options_expr = quote! {
         ultraapi::ResponseModelOptions {
             include: #include_expr,
             exclude: #exclude_expr,
             by_alias: #by_alias_expr,
+            content_type: #response_model_content_type_expr,
         }
     };
 
@@ -934,9 +992,11 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         Some("stream") => quote! { ultraapi::ResponseClass::Stream },
         Some("xml") => quote! { ultraapi::ResponseClass::Xml },
         Some("file") => quote! { ultraapi::ResponseClass::File },
+        Some("redirect") => quote! { ultraapi::ResponseClass::Redirect },
+        Some("cookie") => quote! { ultraapi::ResponseClass::Json }, // Cookies still return JSON body
         Some("json") | None => quote! { ultraapi::ResponseClass::Json },
         other => quote! { 
-            compile_error!(concat!("Invalid response_class: ", #other, ". Valid values are: json, html, text, binary, stream, xml, file")) 
+            compile_error!(concat!("Invalid response_class: ", #other, ". Valid values are: json, html, text, binary, stream, xml, file, redirect, cookie")) 
         },
     };
 
@@ -1020,6 +1080,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             use ultraapi::axum::extract::FromRequestParts;
             use ultraapi::axum::response::IntoResponse;
             use ultraapi::Validate;
+            use ultraapi::ValidateExt;
 
             #scope_creation
             
@@ -1101,6 +1162,26 @@ pub fn put(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn delete(attr: TokenStream, item: TokenStream) -> TokenStream {
     route_macro_impl("delete", attr, item)
+}
+
+#[proc_macro_attribute]
+pub fn patch(attr: TokenStream, item: TokenStream) -> TokenStream {
+    route_macro_impl("patch", attr, item)
+}
+
+#[proc_macro_attribute]
+pub fn head(attr: TokenStream, item: TokenStream) -> TokenStream {
+    route_macro_impl("head", attr, item)
+}
+
+#[proc_macro_attribute]
+pub fn options(attr: TokenStream, item: TokenStream) -> TokenStream {
+    route_macro_impl("options", attr, item)
+}
+
+#[proc_macro_attribute]
+pub fn trace(attr: TokenStream, item: TokenStream) -> TokenStream {
+    route_macro_impl("trace", attr, item)
 }
 
 /// SSE endpoint macro - creates Server-Sent Events endpoints
@@ -1289,6 +1370,7 @@ fn ws_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 include: None,
                 exclude: None,
                 by_alias: false,
+                content_type: None,
             },
             response_class: ultraapi::ResponseClass::Binary, // WebSocket upgrades don't really have a content-type
             summary: None,
@@ -1538,6 +1620,7 @@ fn sse_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                 include: None,
                 exclude: None,
                 by_alias: false,
+                content_type: None,
             },
             response_class: ultraapi::ResponseClass::Stream, // SSE uses stream
             summary: None,

@@ -568,11 +568,84 @@ impl CorsConfig {
     }
 }
 
+/// Compression middleware configuration
+#[derive(Clone)]
+pub struct CompressionConfig {
+    /// Enable gzip compression (default: true)
+    pub gzip: bool,
+    /// Enable br (brotli) compression (default: true)
+    pub brotli: bool,
+    /// Enable deflate compression (default: false)
+    pub deflate: bool,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CompressionConfig {
+    /// Create a new CompressionConfig with defaults (gzip and brotli enabled)
+    pub fn new() -> Self {
+        Self {
+            gzip: true,
+            brotli: true,
+            deflate: false,
+        }
+    }
+
+    /// Enable gzip compression
+    pub fn gzip(mut self, enabled: bool) -> Self {
+        self.gzip = enabled;
+        self
+    }
+
+    /// Enable brotli compression (br)
+    pub fn brotli(mut self, enabled: bool) -> Self {
+        self.brotli = enabled;
+        self
+    }
+
+    /// Enable deflate compression
+    pub fn deflate(mut self, enabled: bool) -> Self {
+        self.deflate = enabled;
+        self
+    }
+
+    /// Build the compression layer
+    pub fn build(self) -> tower_http::compression::CompressionLayer {
+        use tower_http::compression::CompressionLayer;
+
+        // Create compression layer and configure
+        // By default all algorithms are enabled, we disable the ones we don't want
+        let mut compression = CompressionLayer::new();
+
+        // Configure brotli
+        if !self.brotli {
+            compression = compression.no_br();
+        }
+
+        // Configure gzip  
+        if !self.gzip {
+            compression = compression.no_gzip();
+        }
+
+        // Configure deflate
+        if !self.deflate {
+            compression = compression.no_deflate();
+        }
+
+        compression
+    }
+}
+
 /// Middleware builder for UltraAPI applications
 pub struct MiddlewareBuilder {
     pub auth_enabled: bool,
     pub auth_layer: Option<AuthLayer>,
     pub cors_config: Option<CorsConfig>,
+    pub compression_config: Option<CompressionConfig>,
 }
 
 impl Default for MiddlewareBuilder {
@@ -588,6 +661,7 @@ impl MiddlewareBuilder {
             auth_enabled: false,
             auth_layer: None,
             cors_config: None,
+            compression_config: None,
         }
     }
 
@@ -635,6 +709,12 @@ impl MiddlewareBuilder {
     /// Enable CORS with the given configuration
     pub fn cors(mut self, config: CorsConfig) -> Self {
         self.cors_config = Some(config);
+        self
+    }
+
+    /// Enable compression with the given configuration (gzip by default)
+    pub fn compression(&mut self, config: CompressionConfig) -> &mut Self {
+        self.compression_config = Some(config);
         self
     }
 }
