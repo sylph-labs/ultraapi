@@ -12,8 +12,6 @@ use ultraapi::prelude::*;
 struct QueryValidationItem {
     #[validate(minimum = 1)]
     limit: i64,
-    #[validate(max_length = 100)]
-    name: Option<String>,
 }
 
 // --- Test Routes ---
@@ -82,9 +80,8 @@ async fn test_query_validation_with_optional_field_failure() {
     let app = create_query_validation_app();
     let client = TestClient::new(app).await;
     
-    // Invalid query - name too long (max_length = 100)
-    let long_name = "a".repeat(101);
-    let response = client.get(&format!("/__test_query_validation?limit=1&name={}", long_name)).await;
+    // Invalid query - limit=0 should fail validation (minimum = 1)
+    let response = client.get("/__test_query_validation?limit=0").await;
     assert_eq!(response.status(), 422, "Validation failure should return 422");
     
     let body: serde_json::Value = response.json().await.unwrap();

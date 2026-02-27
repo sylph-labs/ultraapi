@@ -521,8 +521,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                                 let #pat: ultraapi::axum::extract::Query<#inner> =
                                     ultraapi::axum::extract::Query::from_request_parts(&mut parts, &state).await
                                     .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid query parameters: {}", e)))?;
-                                // Validate the inner type if it implements Validate (api_model types)
-                                if let Err(e) = (#pat).0.validate_ext() {
+                                // Validate the query params if they implement Validate (api_model types)
+                                if let Err(e) = #pat.0.validate_ext() {
                                     return Err(ultraapi::ApiError::validation_error(e));
                                 }
                             };
@@ -1718,6 +1718,8 @@ fn api_model_enum(input: ItemEnum) -> TokenStream {
             fn validate(&self) -> Result<(), Vec<String>> { Ok(()) }
         }
 
+        impl ultraapi::HasValidate for #name {}
+
         ultraapi::inventory::submit! {
             ultraapi::SchemaInfo {
                 name: #name_str,
@@ -2142,6 +2144,8 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                 if errors.is_empty() { Ok(()) } else { Err(errors) }
             }
         }
+
+        impl ultraapi::HasValidate for #name {}
 
         impl ultraapi::HasSchemaPatches for #name {
             fn patch_schema(props: &mut std::collections::HashMap<String, ultraapi::openapi::PropertyPatch>) {

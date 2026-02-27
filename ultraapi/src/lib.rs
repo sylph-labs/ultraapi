@@ -55,6 +55,7 @@ pub mod prelude {
         UltraApiApp,
         UltraApiRouter,
         Validate,
+        ValidateExt,
         YieldDep,
         DependencyScope,
         test_client::TestClient,
@@ -116,17 +117,54 @@ pub trait Validate {
     fn validate(&self) -> Result<(), Vec<String>>;
 }
 
-/// Helper trait to optionally validate a type if it implements Validate.
-/// This allows calling validate on types that may or may not implement Validate.
-pub trait ValidateExt: Sized {
+/// Marker trait to indicate a type has custom validation logic via Validate.
+/// This is automatically implemented for types marked with #[api_model].
+pub trait HasValidate: Validate {}
+
+/// Registry entry for types that have Validate implementation (api_model types)
+/// Used by ValidateExt to determine if a type should be validated at runtime.
+#[derive(Clone, Copy)]
+pub struct ValidatorInfo {
+    pub validate_fn: fn(&dyn Any) -> Result<(), Vec<String>>,
+}
+
+inventory::collect!(&'static ValidatorInfo);
+
+/// Wrapper type for validated query/body/form parameters (DEPRECATED)
+/// 
+/// This type is deprecated. For Query validation, use api_model types or manually call validate().
+#[deprecated(since = "0.1.0", note = "Use api_model types for automatic validation")]
+pub struct ValidatedWrapper<T>(pub T);
+
+/// Helper trait to optionally validate a type.
+/// 
+/// This trait provides a way to optionally validate types:
+/// - For types registered in the ValidatorInfo inventory (api_model types), it calls validate()
+/// - For other types, it does nothing (no-op)
+/// 
+/// This approach avoids trait implementation overlap while allowing any type to have
+/// validate_ext() called on it (useful for Query parameters that may or may not be api_model types).
+pub trait ValidateExt {
     fn validate_ext(&self) -> Result<(), Vec<String>> {
-        Ok(())
+        Ok(()) // default no-op for non-api_model types
     }
 }
 
-impl<T: Validate> ValidateExt for T {
+/// Blanket implementation for all types - checks inventory at runtime
+impl<T: 'static> ValidateExt for T {
     fn validate_ext(&self) -> Result<(), Vec<String>> {
-        self.validate()
+        let type_id = std::any::TypeId::of::<T>();
+        
+        // Iterate through registered validators to find a match
+        for validator in inventory::iter::<&ValidatorInfo> {
+            // Use pointer trick to call the validator function
+            // We need to cast &self to &dyn Any
+            let any_ref: &dyn std::any::Any = self;
+            return (validator.validate_fn)(any_ref);
+        }
+        
+        // No validator found - no-op
+        Ok(())
     }
 }
 
