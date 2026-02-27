@@ -521,8 +521,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                                 let #pat: ultraapi::axum::extract::Query<#inner> =
                                     ultraapi::axum::extract::Query::from_request_parts(&mut parts, &state).await
                                     .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid query parameters: {}", e)))?;
-                                // Validate the query params if they implement Validate (api_model types)
-                                if let Err(e) = #pat.0.validate_ext() {
+                                // Validate the query params using ValidatedWrapper (handles both api_model and non-api_model types)
+                                if let Err(e) = ultraapi::ValidatedWrapper::validate(&#pat.0) {
                                     return Err(ultraapi::ApiError::validation_error(e));
                                 }
                             };
@@ -1080,7 +1080,6 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             use ultraapi::axum::extract::FromRequestParts;
             use ultraapi::axum::response::IntoResponse;
             use ultraapi::Validate;
-            use ultraapi::ValidateExt;
 
             #scope_creation
             
@@ -1720,6 +1719,21 @@ fn api_model_enum(input: ItemEnum) -> TokenStream {
 
         impl ultraapi::HasValidate for #name {}
 
+        // Register validator in inventory for ValidatedWrapper to find at runtime
+        // Use the simple struct name (without module path) for matching
+        ultraapi::inventory::submit! {
+            ultraapi::ValidatorInfo {
+                type_name: stringify!(#name),
+                validate_fn: |any: &dyn std::any::Any| {
+                    if let Some(val) = any.downcast_ref::<#name>() {
+                        <#name as ultraapi::Validate>::validate(val)
+                    } else {
+                        Err(vec!["Internal validation error: type mismatch".to_string()])
+                    }
+                },
+            }
+        }
+
         ultraapi::inventory::submit! {
             ultraapi::SchemaInfo {
                 name: #name_str,
@@ -2146,6 +2160,21 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         }
 
         impl ultraapi::HasValidate for #name {}
+
+        // Register validator in inventory for ValidatedWrapper to find at runtime
+        // Use the simple struct name (without module path) for matching
+        ultraapi::inventory::submit! {
+            ultraapi::ValidatorInfo {
+                type_name: stringify!(#name),
+                validate_fn: |any: &dyn std::any::Any| {
+                    if let Some(val) = any.downcast_ref::<#name>() {
+                        <#name as ultraapi::Validate>::validate(val)
+                    } else {
+                        Err(vec!["Internal validation error: type mismatch".to_string()])
+                    }
+                },
+            }
+        }
 
         impl ultraapi::HasSchemaPatches for #name {
             fn patch_schema(props: &mut std::collections::HashMap<String, ultraapi::openapi::PropertyPatch>) {

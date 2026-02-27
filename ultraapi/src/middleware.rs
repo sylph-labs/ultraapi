@@ -646,6 +646,7 @@ pub struct MiddlewareBuilder {
     pub auth_layer: Option<AuthLayer>,
     pub cors_config: Option<CorsConfig>,
     pub compression_config: Option<CompressionConfig>,
+    pub rate_limit_config: Option<RateLimitConfig>,
 }
 
 impl Default for MiddlewareBuilder {
@@ -662,6 +663,7 @@ impl MiddlewareBuilder {
             auth_layer: None,
             cors_config: None,
             compression_config: None,
+            rate_limit_config: None,
         }
     }
 
@@ -716,5 +718,337 @@ impl MiddlewareBuilder {
     pub fn compression(&mut self, config: CompressionConfig) -> &mut Self {
         self.compression_config = Some(config);
         self
+    }
+
+    /// Enable rate limiting with the given configuration
+    pub fn rate_limit(&mut self, config: RateLimitConfig) -> &mut Self {
+        self.rate_limit_config = Some(config);
+        self
+    }
+}
+
+// ============================================================================
+// Rate Limiting Middleware
+// ============================================================================
+
+use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// レート制限の設定
+/// 
+/// # Example
+/// 
+/// ```rust
+/// use ultraapi::prelude::*;
+/// 
+/// let app = UltraApiApp::new()
+///     .rate_limit(RateLimitConfig::new(10, Duration::from_secs(60)));
+/// ```
+#[derive(Clone)]
+pub struct RateLimitConfig {
+    /// Maximum number of requests allowed within the time window
+    pub max_requests: u32,
+    /// Time window duration
+    pub window: Duration,
+    /// Custom key function - if None, uses default (X-Forwarded-For or "global")
+    pub key_fn: Option<Arc<dyn Fn(&axum::extract::Request) -> String + Send + Sync>>,
+}
+
+impl RateLimitConfig {
+    /// Create a new rate limit config
+    /// 
+    /// # Arguments
+    /// 
+    /// * `max_requests` - Maximum number of requests allowed
+    /// * `window` - Time window for the rate limit
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    /// use std::time::Duration;
+    /// 
+    /// // Allow 10 requests per minute
+    /// let config = RateLimitConfig::new(10, Duration::from_secs(60));
+    /// ```
+    pub fn new(max_requests: u32, window: Duration) -> Self {
+        Self {
+            max_requests,
+            window,
+            key_fn: None,
+        }
+    }
+
+    /// Set a custom key function for rate limiting
+    /// 
+    /// The key is used to track requests per client. By default, uses X-Forwarded-For header
+    /// (first IP) if available, otherwise uses "global".
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    /// 
+    /// let config = RateLimitConfig::new(10, Duration::from_secs(60))
+    ///     .with_key_fn(|req| {
+    ///         // Use Authorization header as key
+    ///         req.headers()
+    ///             .get("authorization")
+    ///             .map(|h| h.to_str().unwrap_or("unknown").to_string())
+    ///             .unwrap_or_else(|| "anonymous".to_string())
+    ///     });
+    /// ```
+    pub fn with_key_fn<F>(mut self, key_fn: F) -> Self
+    where
+        F: Fn(&axum::extract::Request) -> String + Send + Sync + 'static,
+    {
+        self.key_fn = Some(Arc::new(key_fn));
+        self
+    }
+
+    /// Build the rate limit layer
+    pub fn build(self) -> RateLimitLayer {
+        RateLimitLayer {
+            config: Arc::new(self),
+            store: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+/// Rate limit key with request count and window start time
+#[derive(Clone)]
+struct RateLimitEntry {
+    count: u32,
+    window_start: Instant,
+}
+
+/// Tower middleware layer for rate limiting
+#[derive(Clone)]
+pub struct RateLimitLayer {
+    config: Arc<RateLimitConfig>,
+    store: Arc<RwLock<HashMap<String, RateLimitEntry>>>,
+}
+
+impl<S, B> tower::Service<axum::http::Request<B>> for RateLimitLayer
+where
+    S: tower::Service<axum::http::Request<B>>,
+    B: axum::body::HttpBody,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        // We don't hold any state, just delegate
+        // This is a simple middleware that doesn't need to hold state
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: axum::http::Request<B>) -> Self::Future {
+        let config = self.config.clone();
+        let store = self.store.clone();
+
+        async move {
+            // Get the rate limit key
+            let key = if let Some(ref key_fn) = config.key_fn {
+                key_fn(&req)
+            } else {
+                // Default key: X-Forwarded-For (first IP) or "global"
+                req.headers()
+                    .get("x-forwarded-for")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.split(',').next())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "global".to_string())
+            };
+
+            // Check rate limit
+            let now = Instant::now();
+            let mut store_guard = store.write();
+            
+            // Get or create entry
+            let entry = store_guard.entry(key.clone()).or_insert_with(|| RateLimitEntry {
+                count: 0,
+                window_start: now,
+            });
+
+            // Check if we're in the same window
+            let elapsed = now.duration_since(entry.window_start);
+            if elapsed >= config.window {
+                // Reset window
+                entry.count = 1;
+                entry.window_start = now;
+            } else {
+                entry.count += 1;
+            }
+
+            let remaining = config.max_requests.saturating_sub(entry.count);
+            let retry_after = if entry.count > config.max_requests {
+                // Calculate retry-after duration
+                let wait_time = config.window - elapsed;
+                Some(wait_time.as_secs())
+            } else {
+                None
+            };
+
+            // Release lock before proceeding
+            drop(store_guard);
+
+            // If rate limited, return 429
+            if entry.count > config.max_requests {
+                let error_body = serde_json::json!({
+                    "error": "Too Many Requests",
+                    "details": ["Rate limit exceeded. Please try again later."]
+                });
+
+                let mut response = axum::http::Response::builder()
+                    .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                    .header("content-type", "application/json")
+                    .header("x-ratelimit-limit", config.max_requests.to_string())
+                    .header("x-ratelimit-remaining", "0");
+
+                if let Some(retry) = retry_after {
+                    response = response.header("retry-after", retry.to_string());
+                }
+
+                return Ok(response
+                    .body(axum::body::Body::from(error_body.to_string()))
+                    .unwrap());
+            }
+
+            // Add rate limit headers to the request for the inner service
+            let (mut parts, body) = req.into_parts();
+            parts.headers.insert(
+                "x-ratelimit-limit".parse().unwrap(),
+                config.max_requests.to_string().parse().unwrap(),
+            );
+            parts.headers.insert(
+                "x-ratelimit-remaining".parse().unwrap(),
+                remaining.to_string().parse().unwrap(),
+            );
+
+            Ok(axum::http::Response::from_parts(parts, body))
+        }
+    }
+}
+
+/// Transform our service into a Layer for use with axum
+impl<S> axum::middleware::Layer<S> for RateLimitLayer {
+    fn layer(&self, inner: S) -> Self::Service {
+        // We need to adapt our Service to work with axum's middleware
+        // This is done through a custom wrapper
+        RateLimitService {
+            inner,
+            layer: self.clone(),
+        }
+    }
+}
+
+/// Wrapper service that combines the rate limit layer with the inner service
+#[derive(Clone)]
+pub struct RateLimitService<S> {
+    inner: S,
+    layer: RateLimitLayer,
+}
+
+impl<S, B> tower::Service<axum::http::Request<B>> for RateLimitService<S>
+where
+    S: tower::Service<axum::http::Request<B>>,
+    B: axum::body::HttpBody,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: axum::http::Request<B>) -> Self::Future {
+        let config = self.layer.config.clone();
+        let store = self.layer.store.clone();
+
+        let key = if let Some(ref key_fn) = config.key_fn {
+            key_fn(&req)
+        } else {
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|h| h.to_str().ok())
+                .and_then(|s| s.split(',').next())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "global".to_string())
+        };
+
+        // Check rate limit synchronously (since we use parking_lot)
+        let now = Instant::now();
+        let mut store_guard = store.write();
+        
+        let entry = store_guard.entry(key.clone()).or_insert_with(|| RateLimitEntry {
+            count: 0,
+            window_start: now,
+        });
+
+        let elapsed = now.duration_since(entry.window_start);
+        if elapsed >= config.window {
+            entry.count = 1;
+            entry.window_start = now;
+        } else {
+            entry.count += 1;
+        }
+
+        let remaining = config.max_requests.saturating_sub(entry.count);
+        let retry_after = if entry.count > config.max_requests {
+            Some((config.window - elapsed).as_secs())
+        } else {
+            None
+        };
+
+        drop(store_guard);
+
+        if entry.count > config.max_requests {
+            let error_body = serde_json::json!({
+                "error": "Too Many Requests",
+                "details": ["Rate limit exceeded. Please try again later."]
+            });
+
+            let mut response = axum::http::Response::builder()
+                .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                .header("content-type", "application/json")
+                .header("x-ratelimit-limit", config.max_requests.to_string())
+                .header("x-ratelimit-remaining", "0");
+
+            if let Some(retry) = retry_after {
+                response = response.header("retry-after", retry.to_string());
+            }
+
+            let res = response
+                .body(axum::body::Body::from(error_body.to_string()))
+                .unwrap();
+            
+            // Return a boxed future that resolves immediately
+            return Box::pin(async { Ok(res) });
+        }
+
+        // Add headers and continue
+        let (mut parts, body) = req.into_parts();
+        parts.headers.insert(
+            "x-ratelimit-limit".parse().unwrap(),
+            config.max_requests.to_string().parse().unwrap(),
+        );
+        parts.headers.insert(
+            "x-ratelimit-remaining".parse().unwrap(),
+            remaining.to_string().parse().unwrap(),
+        );
+
+        let req = axum::http::Request::from_parts(parts, body);
+        self.inner.call(req)
     }
 }

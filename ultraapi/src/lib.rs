@@ -2,6 +2,7 @@ pub mod grpc;
 pub mod lifespan;
 pub mod middleware;
 pub mod openapi;
+pub mod response_tasks;
 pub mod templates;
 pub mod test_client;
 
@@ -33,6 +34,7 @@ pub mod prelude {
     pub use crate::inventory;
     pub use crate::schemars;
     pub use crate::serde;
+    pub use crate::response_tasks::{BackgroundTasks, response_task_middleware};
     pub use crate::templates::{TemplateResponse, Templates, template_response};
     pub use crate::{
         lifespan::Lifecycle,
@@ -55,7 +57,6 @@ pub mod prelude {
         UltraApiApp,
         UltraApiRouter,
         Validate,
-        ValidateExt,
         YieldDep,
         DependencyScope,
         test_client::TestClient,
@@ -121,46 +122,90 @@ pub trait Validate {
 /// This is automatically implemented for types marked with #[api_model].
 pub trait HasValidate: Validate {}
 
+/// Query/Form/Bodyパラメータのvalidationを行うラッパータイプ
+/// 
+/// # 概要
+/// 
+/// UltraAPIは、Query<T>パラメータ自動的にvalidate()を呼び出す機能を提供します。
+/// - `#[api_model]`でマークされた型（api_model型）は、validationが自動的に実行されます
+/// - api_modelでない型はvalidationをスキップします（no-op）
+/// 
+/// # 動作原理
+/// 
+/// 内部的にはinventory registryを使用してruntime時に型を判定します：
+/// 1. `#[api_model]`マクロは、validator情報をinventoryに登録します
+/// 2. ルート処理時に`ValidatedWrapper`を使用してvalidationを実行します
+/// 3. 登録されたvalidatorがある場合のみvalidationを呼び出します
+/// 
+/// # 使用方法
+/// 
+/// ```ignore
+/// #[api_model]
+/// struct MyQuery {
+///     #[validate(minimum = 1)]
+///     limit: i64,
+/// }
+/// 
+/// #[get("/items")]
+/// async fn list_items(query: Query<MyQuery>) -> Vec<Item> {
+///     // queryは自動的にvalidationされます
+///     // validation失敗時は422エラーを返します
+/// }
+/// ```
+/// 
+/// # Error Response
+/// 
+/// validation失敗時のレスポンス形式はBody/Formと統一されています：
+/// ```json
+/// {
+///     "error": "Validation failed",
+///     "details": ["limit must be at least 1"]
+/// }
+/// ```
+/// 
+/// # OpenAPIとの統合
+/// 
+/// QueryパラメータのOpenAPI schemaは自動的に生成されます：
+/// - requiredフィールド→OpenAPIのrequired配列に追加
+/// - nullable設定→OpenAPI schemaに反映
+/// - validate属性→OpenAPI schemaの制約として反映
+/// 
 /// Registry entry for types that have Validate implementation (api_model types)
-/// Used by ValidateExt to determine if a type should be validated at runtime.
+/// Used by ValidatedWrapper to determine if a type should be validated at runtime.
 #[derive(Clone, Copy)]
 pub struct ValidatorInfo {
-    pub validate_fn: fn(&dyn Any) -> Result<(), Vec<String>>,
+    /// Type name for matching at runtime
+    pub type_name: &'static str,
+    /// Validation function - takes &dyn Any and returns Result
+    pub validate_fn: fn(&dyn std::any::Any) -> Result<(), Vec<String>>,
 }
 
-inventory::collect!(&'static ValidatorInfo);
+inventory::collect!(ValidatorInfo);
 
-/// Wrapper type for validated query/body/form parameters (DEPRECATED)
+/// Wrapper type for validated query/body/form parameters.
 /// 
-/// This type is deprecated. For Query validation, use api_model types or manually call validate().
-#[deprecated(since = "0.1.0", note = "Use api_model types for automatic validation")]
-pub struct ValidatedWrapper<T>(pub T);
+/// This wrapper checks the inventory registry at runtime to determine if the inner type
+/// has validation logic (api_model types). If so, it calls validate(). Otherwise, it's a no-op.
+///
+/// This approach avoids trait implementation conflicts by using runtime type checking.
+pub struct ValidatedWrapper<T: ?Sized>(pub T);
 
-/// Helper trait to optionally validate a type.
-/// 
-/// This trait provides a way to optionally validate types:
-/// - For types registered in the ValidatorInfo inventory (api_model types), it calls validate()
-/// - For other types, it does nothing (no-op)
-/// 
-/// This approach avoids trait implementation overlap while allowing any type to have
-/// validate_ext() called on it (useful for Query parameters that may or may not be api_model types).
-pub trait ValidateExt {
-    fn validate_ext(&self) -> Result<(), Vec<String>> {
-        Ok(()) // default no-op for non-api_model types
-    }
-}
-
-/// Blanket implementation for all types - checks inventory at runtime
-impl<T: 'static> ValidateExt for T {
-    fn validate_ext(&self) -> Result<(), Vec<String>> {
-        let type_id = std::any::TypeId::of::<T>();
+/// Validates the wrapped value if it's an api_model type (registered in inventory).
+impl<T: 'static> ValidatedWrapper<T> {
+    /// Validate the wrapped value if it has a registered validator.
+    /// Returns Ok(()) if no validator is registered (non-api_model types).
+    pub fn validate(value: &T) -> Result<(), Vec<String>> {
+        // Get the simple type name (last segment of the full path)
+        let full_type_name = std::any::type_name::<T>();
+        let simple_name = full_type_name.rsplit("::").next().unwrap_or(full_type_name);
         
         // Iterate through registered validators to find a match
-        for validator in inventory::iter::<&ValidatorInfo> {
-            // Use pointer trick to call the validator function
-            // We need to cast &self to &dyn Any
-            let any_ref: &dyn std::any::Any = self;
-            return (validator.validate_fn)(any_ref);
+        for validator in inventory::iter::<ValidatorInfo> {
+            if validator.type_name == simple_name {
+                // Found matching validator - call it
+                let any_ref: &dyn std::any::Any = value;
+                return (validator.validate_fn)(any_ref);
+            }
         }
         
         // No validator found - no-op
@@ -2539,6 +2584,74 @@ impl UltraApiApp {
         self
     }
 
+    /// レート制限を有効化します
+    ///
+    /// デフォルトでは `X-Forwarded-For` ヘッダー（最初のIP）を使用してクライアントを識別します。
+    /// ヘッダーが存在しない場合は `"global"` キーが使用されます。
+    ///
+    /// # Arguments
+    ///
+    /// * `max_requests` - ウィンドウ内で許可される最大リクエスト数
+    /// * `window` - レート制限の時間枠
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    /// use std::time::Duration;
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .title("My API")
+    ///     .rate_limit(10, Duration::from_secs(60)); // 1分間に10リクエスト
+    /// ```
+    ///
+    /// カスタムキー関数を使用する場合:
+    ///
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    /// use std::time::Duration;
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .title("My API")
+    ///     .rate_limit(middleware::RateLimitConfig::new(10, Duration::from_secs(60))
+    ///         .with_key_fn(|req| {
+    ///             //  Authorization ヘッダーを使用
+    ///             req.headers()
+    ///                 .get("authorization")
+    ///                 .map(|h| h.to_str().unwrap_or("unknown").to_string())
+    ///                 .unwrap_or_else(|| "anonymous".to_string())
+    ///         }));
+    /// ```
+    pub fn rate_limit(mut self, config: middleware::RateLimitConfig) -> Self {
+        self.middleware.rate_limit(config);
+        self
+    }
+
+    /// レート制限を有効化します（簡単なインターフェース）
+    ///
+    /// # Arguments
+    ///
+    /// * `max_requests` - ウィンドウ内で許可される最大リクエスト数
+    /// * `window_secs` - レート制限の時間枠（秒）
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .title("My API")
+    ///     .rate_limit(10, 60); // 1分間に10リクエスト
+    /// ```
+    pub fn rate_limit_max(mut self, max_requests: u32, window_secs: u64) -> Self {
+        let config = middleware::RateLimitConfig::new(
+            max_requests,
+            std::time::Duration::from_secs(window_secs),
+        );
+        self.middleware.rate_limit(config);
+        self
+    }
+
     /// Check if routers were explicitly included
     pub fn has_explicit_routes(&self) -> bool {
         !self.routers.is_empty()
@@ -2761,6 +2874,11 @@ impl UltraApiApp {
             app = app.layer(compression_config.clone().build());
         }
 
+        // Apply rate limiting if configured
+        if let Some(ref rate_limit_config) = self.middleware.rate_limit_config {
+            app = app.layer(rate_limit_config.clone().build());
+        }
+
         let mut app = app.with_state(state.clone());
 
         // Apply panic catching first (so global error handler can see the 500 response)
@@ -2801,6 +2919,10 @@ impl UltraApiApp {
                 },
             ));
         }
+
+        // Apply response background tasks middleware
+        // This executes tasks added via BackgroundTasks dependency after response is sent
+        app = app.layer(axum::middleware::from_fn(response_tasks::response_task_middleware));
 
         app
     }
