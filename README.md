@@ -4,231 +4,553 @@
 [![docs.rs](https://docs.rs/ultraapi/badge.svg)](https://docs.rs/ultraapi)
 [![CI](https://github.com/sylph-labs/ultraapi/actions/workflows/ci.yml/badge.svg)](https://github.com/sylph-labs/ultraapi/actions/workflows/ci.yml)
 
-> English README: [README.en.md](./README.en.md)
+> **日本語**: [日本語版README (README.ja.md)](./README.ja.md) がございます。
 
-Rust で **FastAPI ライクな開発体験（DX）** を目指す、Axum ベースの Web フレームワークです。
+A FastAPI-inspired Rust web framework with automatic OpenAPI/Swagger documentation generation.
 
-- コンセプト: **Rust 性能 × FastAPI DX**
-- OpenAPI: `GET /openapi.json`
-- Docs UI: `GET /docs`（既定は Embedded: Scalar）
+## Features
 
-## 特徴（MVP）
+- **Automatic OpenAPI Generation**: Every route automatically gets documented in OpenAPI 3.1 format
+- **Swagger UI**: Built-in `/docs` endpoint serves interactive API documentation
+- **Type-Safe**: Full type inference with Rust's compile-time checks
+- **Dependency Injection**: First-class support for `Dep<T>`, `State<T>`, and `Depends<T>` extractors
+- **Yield Dependencies**: FastAPI-style generator dependencies with cleanup hooks and scope management (function/request)
+- **Validation**: Built-in validation with `#[validate]` attributes (email, min/max length, pattern, numeric ranges)
+- **Router Composition**: Nested routers with prefix concatenation and tag/security propagation
+- **Result Handler**: Automatic `Result<T, ApiError>` handling with proper HTTP status codes
+- **Bearer Auth**: Easy JWT bearer authentication setup
 
-- **FastAPI 風のルート定義**: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
-- **serde/schemars から OpenAPI 自動生成**: `#[api_model]` の型定義から schema を生成
-- **/docs 組み込み**: そのまま API リファレンス UI を提供（CDN Swagger UI も可）
-- **自動バリデーション**: `#[validate(...)]` で 422（Unprocessable Entity）を返却
-- **DI（依存性注入）**: `Dep<T>`, `State<T>`, `Depends<T>`
-- **Router 合成**: prefix / tags / security をルーター単位で合成
-- **WebSocket / SSE**: `#[ws]`, `#[sse]`
-- **Lifespan hooks**: startup/shutdown
-
-## インストール
-
-```toml
-[dependencies]
-ultraapi = "0.1"
-```
-
-## クイックスタート
-
-### 1) モデル定義（OpenAPI + Validation）
+## Quick Start
 
 ```rust
 use ultraapi::prelude::*;
 
-/// ユーザー作成リクエスト
 #[api_model]
-#[derive(Debug, Clone)]
-struct CreateUser {
-    #[validate(min_length = 1, max_length = 100)]
-    name: String,
-
-    #[validate(email)]
-    email: String,
-}
-
-/// ユーザー
-#[api_model]
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 struct User {
     id: i64,
     name: String,
     email: String,
 }
-```
-
-### 2) ルート定義（FastAPI 風）
-
-```rust
-use ultraapi::prelude::*;
 
 #[post("/users")]
-async fn create_user(body: CreateUser) -> User {
-    User { id: 1, name: body.name, email: body.email }
+async fn create_user(user: User) -> User {
+    User {
+        id: 1,
+        name: user.name,
+        email: user.email,
+    }
 }
 
 #[get("/users/{id}")]
 async fn get_user(id: i64) -> Result<User, ApiError> {
-    Ok(User { id, name: "Alice".into(), email: "alice@example.com".into() })
+    // Return Result<T, ApiError> for automatic error handling
+    Ok(User {
+        id,
+        name: "Alice".into(),
+        email: "alice@example.com".into(),
+    })
 }
-```
 
-### 3) Router 合成 + 起動
+#[derive(Clone)]
+struct Database;
 
-`#[get]` などのマクロは、ルート参照（`__HAYAI_ROUTE_<FN>`）を自動生成します。
-
-```rust
-use ultraapi::prelude::*;
-
-fn api() -> UltraApiRouter {
-    UltraApiRouter::new("/api")
-        .tag("users")
-        .route(__HAYAI_ROUTE_CREATE_USER)
-        .route(__HAYAI_ROUTE_GET_USER)
+impl Database {
+    async fn get_user(&self, id: i64) -> Option<User> {
+        Some(User { id, name: "Alice".into(), email: "alice@example.com".into() })
+    }
 }
 
 #[tokio::main]
 async fn main() {
+    // The route macros generate route refs like `__HAYAI_ROUTE_CREATE_USER`
+    let api = UltraApiRouter::new("/api")
+        .route(__HAYAI_ROUTE_CREATE_USER)
+        .route(__HAYAI_ROUTE_GET_USER);
+
     UltraApiApp::new()
         .title("My API")
         .version("1.0.0")
-        .include(api())
+        .dep(Database)
+        .include(api)
         .serve("0.0.0.0:3000")
         .await;
 }
 ```
 
-起動後:
+## API Reference
 
-- OpenAPI: `GET /openapi.json`
-- Docs: `GET /docs`
+### Macros
 
-## 主要マクロ
+- `#[get(path)]` - Register a GET endpoint
+- `#[post(path)]` - Register a POST endpoint  
+- `#[put(path)]` - Register a PUT endpoint
+- `#[delete(path)]` - Register a DELETE endpoint
+- `#[api_model]` - Generate validation and OpenAPI schema for a struct/enum
+- `#[status(N)]` - Set custom HTTP status code for a route
+- `#[tag("name")]` - Add tags for OpenAPI grouping
+- `#[security("scheme")]` - Apply security scheme to a route
+- `#[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")]` - Set response content type
 
-- ルート: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
-- モデル: `#[api_model]`
-- WebSocket: `#[ws]`
-- SSE: `#[sse]`
+### Response Model Shaping
 
-### ルート向け追加属性
-
-- `#[status(200)]` など: 成功時ステータスコード
-- `#[tag("name")]`: OpenAPI タグ
-- `#[security("bearer")]`: セキュリティ要件（OpenAPI と auth middleware に反映）
-- `#[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")]`: content-type
-- `#[response_model(...)]`: response shaping（include/exclude/by_alias）
-- `#[summary("...")]`: OpenAPI summary
-- `#[external_docs(url = "...", description = "...")]`: OpenAPI externalDocs
-- `#[deprecated]`: OpenAPI deprecated
-
-## Swagger UI / Docs
-
-既定は Embedded（Scalar）です。Swagger UI を CDN から読み込みたい場合:
+UltraAPI supports FastAPI-like response model shaping with `include`, `exclude`, and `by_alias` options:
 
 ```rust
 use ultraapi::prelude::*;
 
-let app = UltraApiApp::new().swagger_cdn("https://unpkg.com/swagger-ui-dist@5");
+#[api_model]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct UserProfile {
+    id: i64,
+    username: String,
+    email: String,
+    password_hash: String,
+    created_at: String,
+    is_admin: bool,
+}
+
+// Include only specific fields in the response
+#[get("/users/{id}/public", response_model(include={"id", "username"}))]
+async fn get_public_profile(id: i64) -> UserProfile {
+    UserProfile {
+        id,
+        username: "alice".into(),
+        email: "alice@example.com".into(),
+        password_hash: "secret".into(),
+        created_at: "2024-01-01".into(),
+        is_admin: false,
+    }
+}
+
+// Exclude sensitive fields from the response
+#[get("/users/{id}/profile", response_model(exclude={"password_hash"}))]
+async fn get_user_profile(id: i64) -> UserProfile {
+    UserProfile {
+        id,
+        username: "alice".into(),
+        email: "alice@example.com".into(),
+        password_hash: "secret".into(),
+        created_at: "2024-01-01".into(),
+        is_admin: false,
+    }
+}
+
+// Use alias names (from serde(rename)) for serialization
+#[get("/users/{id}/api", response_model(by_alias=true))]
+async fn get_user_api(id: i64) -> UserProfile {
+    UserProfile {
+        id,
+        username: "alice".into(),
+        email: "alice@example.com".into(),
+        password_hash: "secret".into(),
+        created_at: "2024-01-01".into(),
+        is_admin: false,
+    }
+}
+
+// Combine include and exclude (include takes precedence)
+#[get("/users/{id}/summary", response_model(include={"id", "username"}, exclude={"email"}))]
+async fn get_user_summary(id: i64) -> UserProfile {
+    UserProfile {
+        id,
+        username: "alice".into(),
+        email: "alice@example.com".into(),
+        password_hash: "secret".into(),
+        created_at: "2024-01-01".into(),
+        is_admin: false,
+    }
+}
 ```
 
-## Webhooks と Callbacks（OpenAPI）
+### Field-Level Attributes for api_model
 
-UltraAPI は OpenAPI 3.1 の **webhooks** と **callbacks** をサポートしています。
-
-- `webhooks` は OpenAPI spec のトップレベル `webhooks` に出力
-- `callbacks` は特定の operation の `callbacks` に出力
-
-これらの API は **OpenAPI への出力** を追加します（runtime router への登録は行いません）。
-ただし、最終的にルートが公開されるかどうかは **アプリのルーティング方式** に依存します。
-
-- **explicit routing（`.include(...)` を使う場合）**: include していないルートは runtime に登録されません
-- **implicit routing（inventory 全登録を使う場合）**: `#[get]`/`#[post]` などで定義したルートは runtime に登録されます
-
-「OpenAPI にだけ載せたい」場合は、explicit routing を使い、webhook/callback 用ルートを `include(...)` しない運用にしてください。
-
-### Webhooks
+UltraAPI supports custom field attributes for controlling serialization behavior:
 
 ```rust
 use ultraapi::prelude::*;
 
 #[api_model]
 #[derive(Debug, Clone)]
-struct PaymentEvent {
-    event_type: String,
-    amount: f64,
+struct UserResponse {
+    // Field alias - serializes with the alias name
+    #[alias("userId")]
+    user_id: i64,
+    
+    // Skip serialization (field not included in JSON output)
+    #[skip_serializing]
+    internal_note: String,
+    
+    // Skip deserialization (field uses default value when parsing JSON)
+    #[skip_deserializing]
+    computed_field: String,
+    
+    // Skip both serialization and deserialization
+    #[skip]
+    private_data: String,
 }
 
-#[post("/webhooks/payment")]
-#[tag("webhooks")]
-async fn payment_webhook(body: PaymentEvent) -> PaymentEvent {
-    body
+// Standard serde attributes are also supported:
+#[api_model]
+#[derive(Debug, Clone)]
+struct LegacyResponse {
+    #[serde(rename = "userId")]
+    user_id: i64,
+    
+    #[serde(skip_serializing)]
+    internal: String,
+    
+    #[serde(skip)]
+    hidden: String,
 }
+```
+
+**Note:** When using `#[skip_deserializing]`, the field will receive its type's default value (e.g., empty `String`, `0` for integers) when deserializing, regardless of any value present in the JSON input.
+
+#### Input/Output Schema Separation (FastAPI-style)
+
+UltraAPI supports FastAPI-like `read_only` and `write_only` field attributes for automatic input/output schema separation:
+
+```rust
+use ultraapi::prelude::*;
+
+#[api_model]
+struct User {
+    /// User ID (only in response - read only)
+    #[read_only]
+    id: i64,
+    
+    /// Username (in both request and response)
+    username: String,
+    
+    /// Password (only in request - write only)
+    #[write_only]
+    password: String,
+    
+    /// Email (in both request and response)
+    email: String,
+}
+```
+
+**Behavior:**
+- `#[read_only]`: Field appears in responses but NOT in request bodies (sets `readOnly: true` in OpenAPI, adds `skip_deserializing` to serde)
+- `#[write_only]`: Field appears in requests but NOT in responses (sets `writeOnly: true` in OpenAPI, adds `skip_serializing` to serde)
+
+This is useful for:
+- Password fields that should be accepted in create requests but never returned
+- Auto-generated IDs that are returned but never accepted as input
+- Internal timestamps or computed fields
+
+**Caveats:**
+- The `by_alias=true` option in `response_model` works with both `#[alias(...)]` and `#[serde(rename = "...")]` attributes
+- Fields marked with `#[skip_serializing]` are still included in the OpenAPI schema (since they can still be deserialized)
+- For complete control over schema generation, use response_model `include`/`exclude` options at the route level
+
+Note: The include/exclude filtering works recursively on nested objects and arrays. When both `include` and `exclude` are specified, `include` takes precedence.
+
+### Response Class
+
+UltraAPI supports specifying different response content types using the `response_class` attribute. This controls both the runtime response Content-Type header and the OpenAPI specification:
+
+```rust
+use ultraapi::prelude::*;
+
+// Default JSON response (implicit)
+#[get("/users/{id}")]
+async fn get_user(id: i64) -> User {
+    User { id, name: "Alice".into() }
+}
+
+// Explicit JSON response
+#[get("/users/{id}/json", response_class("json"))]
+async fn get_user_json(id: i64) -> User {
+    User { id, name: "Alice".into() }
+}
+
+// HTML response
+#[get("/html")]
+#[response_class("html")]
+async fn get_html() -> String {
+    "<html><body><h1>Hello</h1></body></html>".to_string()
+}
+
+// Plain text response
+#[get("/text")]
+#[response_class("text")]
+async fn get_text() -> String {
+    "Plain text content".to_string()
+}
+
+// Binary/octet-stream response
+#[get("/download")]
+#[response_class("binary")]
+async fn download_file() -> Vec<u8> {
+    vec![0x00, 0x01, 0x02, 0xFF]
+}
+
+// Streaming response (also application/octet-stream)
+#[get("/stream")]
+#[response_class("stream")]
+async fn stream_data() -> String {
+    "Streaming content".to_string()
+}
+
+// XML response
+#[get("/data.xml")]
+#[response_class("xml")]
+async fn get_xml() -> String {
+    "<data><item>value</item></data>".to_string()
+}
+```
+
+Valid `response_class` values:
+- `"json"` - Default, returns `application/json`
+- `"html"` - Returns `text/html`
+- `"text"` - Returns `text/plain`
+- `"binary"` - Returns `application/octet-stream`
+- `"stream"` - Returns `application/octet-stream` (for streaming responses)
+- `"xml"` - Returns `application/xml`
+
+The OpenAPI specification will automatically reflect the correct content-type for each endpoint.
+
+### Security Schemes
+
+UltraAPI supports multiple security schemes for OpenAPI documentation:
+
+```rust
+use ultraapi::prelude::*;
+
+// Bearer Authentication (JWT)
+let app = UltraApiApp::new()
+    .bearer_auth();
+
+// API Key Authentication
+let app = UltraApiApp::new()
+    .api_key("apiKeyAuth", "X-API-Key", "header");
+
+// OAuth2 - Implicit Flow
+let app = UltraApiApp::new()
+    .oauth2_implicit(
+        "oauth2Implicit",
+        "https://example.com/authorize",
+        [("read", "Read access"), ("write", "Write access")],
+    );
+
+// OAuth2 - Password Flow
+let app = UltraApiApp::new()
+    .oauth2_password(
+        "oauth2Password",
+        "https://example.com/token",
+        [("read", "Read access"), ("write", "Write access")],
+    );
+
+// OAuth2 - Client Credentials Flow
+let app = UltraApiApp::new()
+    .oauth2_client_credentials(
+        "oauth2ClientCredentials",
+        "https://example.com/token",
+        [("read", "Read access")],
+    );
+
+// OAuth2 - Authorization Code Flow
+let app = UltraApiApp::new()
+    .oauth2_authorization_code(
+        "oauth2AuthCode",
+        "https://example.com/authorize",
+        "https://example.com/token",
+        [("read", "Read access"), ("write", "Write access")],
+    );
+
+// OpenID Connect
+let app = UltraApiApp::new()
+    .openid_connect("oidc", "https://example.com/.well-known/openid-configuration");
+
+// Protect routes with #[security("schemeName")]
+#[get("/protected")]
+#[security("oauth2AuthCode")]
+async fn protected_route() -> String {
+    "secret data".to_string()
+}
+```
+
+### Runtime Auth Enforcement
+
+UltraAPI supports runtime enforcement of security requirements via middleware:
+
+```rust
+use ultraapi::prelude::*;
+use ultraapi::middleware::{SecuritySchemeConfig, ScopedAuthValidator, MockAuthValidator};
+
+// Enable auth middleware with default mock validator
+let app = UltraApiApp::new()
+    .title("Secure API")
+    .version("1.0.0")
+    .bearer_auth()
+    .middleware(|builder| {
+        builder.enable_auth()  // Enforce #[security] routes at runtime
+    });
+
+// With custom API keys
+let app = UltraApiApp::new()
+    .api_key("apiKeyAuth", "X-API-Key", "header")
+    .middleware(|builder| {
+        builder.enable_auth_with_api_keys(vec!["my-secret-key".to_string()])
+    });
+
+// API Key in query parameter
+let app = UltraApiApp::new()
+    .security_scheme(
+        "apiKeyAuth",
+        ultraapi::openapi::SecurityScheme::ApiKey {
+            name: "api_key".to_string(),
+            location: "query".to_string(),
+        },
+    )
+    .middleware(|builder| {
+        builder
+            .enable_auth_with_api_keys(vec!["valid-key".to_string()])
+            .with_security_scheme(
+                SecuritySchemeConfig::api_key_query("apiKeyAuth", "api_key")
+            )
+    });
+
+// API Key in cookie
+let app = UltraApiApp::new()
+    .security_scheme(
+        "apiKeyAuth",
+        ultraapi::openapi::SecurityScheme::ApiKey {
+            name: "session".to_string(),
+            location: "cookie".to_string(),
+        },
+    )
+    .middleware(|builder| {
+        builder
+            .enable_auth_with_api_keys(vec!["session-key".to_string()])
+            .with_security_scheme(
+                SecuritySchemeConfig::api_key_cookie("apiKeyAuth", "session")
+            )
+    });
+
+// With scope-based authorization
+let validator = ScopedAuthValidator::new(MockAuthValidator::new())
+    .with_scope("admin-token", vec!["read".to_string(), "write".to_string(), "admin".to_string()]);
 
 let app = UltraApiApp::new()
-    .webhook("payment", __HAYAI_ROUTE_PAYMENT_WEBHOOK);
+    .bearer_auth()
+    .middleware(|builder| {
+        builder
+            .enable_auth_with_validator(validator)
+            .with_security_scheme(
+                SecuritySchemeConfig::bearer("bearerAuth")
+                    .with_scopes(vec!["admin".to_string()])
+            )
+    });
+
+// Protect routes with scopes
+#[get("/admin-only")]
+#[security("bearerAuth")]
+async fn admin_route() -> String {
+    "admin data".to_string()
+}
 ```
 
-### Callbacks
+### Extractors
+
+- `Dep<T>` - Inject dependencies registered with `.dep()`
+- `State<T>` - Inject app state with type safety
+- `Depends<T>` - FastAPI-style dependency injection with nested support
+
+### Yield Dependencies (FastAPI-style)
+
+UltraAPI supports generator-based dependencies with cleanup hooks, similar to FastAPI's `yield` dependencies:
 
 ```rust
 use ultraapi::prelude::*;
+use std::sync::Arc;
 
-#[api_model]
-#[derive(Debug, Clone)]
-struct Subscription {
-    id: i64,
-    plan: String,
+// Define a resource with cleanup
+struct DatabasePool { connection_string: String }
+
+#[async_trait::async_trait]
+impl Generator for DatabasePool {
+    type Output = Self;
+    type Error = DependencyError;
+
+    async fn generate(self: Arc<Self>, _scope: Scope) -> Result<Self::Output, Self::Error> {
+        // Setup: connect to database
+        Ok(Arc::try_unwrap(self).unwrap_or_else(|a| (*a).clone()))
+    }
+
+    async fn cleanup(self: Arc<Self>) -> Result<(), Self::Error> {
+        // Cleanup: close connection
+        println!("Closing database connection");
+        Ok(())
+    }
 }
 
-#[api_model]
-#[derive(Debug, Clone)]
-struct SubscriptionEvent {
-    event_type: String,
-    subscription_id: i64,
-}
+// Register with function scope (cleanup runs before response)
+let app = UltraApiApp::new()
+    .yield_depends(Arc::new(DatabasePool { connection_string: "...".into() }), Scope::Function);
 
-#[post("/subscriptions")]
-async fn create_subscription(body: Subscription) -> Subscription {
-    body
-}
-
-#[post("/webhooks/subscription")]
-async fn subscription_callback(body: SubscriptionEvent) -> SubscriptionEvent {
-    body
-}
-
-let app = UltraApiApp::new().callback(
-    __HAYAI_ROUTE_CREATE_SUBSCRIPTION,
-    "subscriptionEvent",
-    "{$request.body#/callbackUrl}",
-    __HAYAI_ROUTE_SUBSCRIPTION_CALLBACK,
-);
+// Or with request scope (cleanup runs after response)
+let app = UltraApiApp::new()
+    .yield_depends(Arc::new(DatabasePool { connection_string: "...".into() }), Scope::Request);
 ```
 
-## バリデーション
+- **Function scope**: Cleanup runs before the handler returns its response
+- **Request scope**: Cleanup runs after the entire request handling completes, and each request gets a fresh dependency instance
 
-`#[api_model]` を付けた型に対して、以下の属性が利用できます:
+### Validation Attributes
 
-- `#[validate(email)]`
-- `#[validate(min_length = N)]`
-- `#[validate(max_length = N)]`
-- `#[validate(minimum = N)]`
-- `#[validate(maximum = N)]`
-- `#[validate(pattern = "...")]`
-- `#[validate(min_items = N)]`
+- `#[validate(email)]` - Validate as email address
+- `#[validate(min_length = N)]` - Minimum string length
+- `#[validate(max_length = N)]` - Maximum string length
+- `#[validate(minimum = N)]` - Minimum numeric value
+- `#[validate(maximum = N)]` - Maximum numeric value
+- `#[validate(pattern = "regex")]` - Pattern match
+- `#[validate(min_items = N)]` - Minimum array length
 
-## 依存性注入（DI）
+### Input/Output Schema Attributes
 
-- `Dep<T>` / `State<T>`: アプリに登録した依存性を取り出す
-- `Depends<T>`: FastAPI 風の依存性（関数ベース）
-- `yield_depends`: cleanup を持つ依存性（scope: Function/Request）
+- `#[read_only]` - Field appears only in responses (not in request bodies)  
+  (Derived from `#[serde(skip_deserializing)]`)
+- `#[write_only]` - Field appears only in requests (not in responses)
+  (Derived from `#[serde(skip_serializing)]`)
 
-## Examples
+> Note: OpenAPI `readOnly` and `writeOnly` properties are automatically extracted from schemars metadata.
 
-- `examples/ultraapi-example`
-- `examples/grpc-example`
+### OpenAPI Endpoints
 
-## ライセンス
+- `GET /openapi.json` - Raw OpenAPI 3.1 spec
+- `GET /docs` - Swagger UI
+
+## Testing
+
+### OpenAPI FastAPI Parity Golden Tests
+
+UltraAPI includes golden tests to ensure OpenAPI output parity with FastAPI. These tests compare generated OpenAPI schemas against a known-good snapshot to catch regressions.
+
+**Test file:** `ultraapi/tests/openapi_fastapi_parity_tests.rs`
+
+**Golden file:** `ultraapi/tests/golden/openapi_fastapi_parity.json`
+
+The test validates:
+- Path operations (GET, POST, PUT, DELETE)
+- Path parameters with proper `in: path` specification
+- Query parameters from struct extractors
+- Request body schemas with validation constraints (`minLength`, `maxLength`, `minimum`, `pattern`)
+- Response schemas with `$ref` to components/schemas
+- Components/schemas with proper type definitions
+
+**To update the golden file** (after intentional OpenAPI output changes):
+
+```bash
+cd ultraapi
+UPDATE_GOLDEN=1 cargo test test_openapi_fastapi_parity_regenerate
+```
+
+This will regenerate the golden snapshot at `tests/golden/openapi_fastapi_parity.json`. Review the diff to ensure changes are intentional, then commit the updated golden file.
+
+## License
 
 MIT

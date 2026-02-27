@@ -81,6 +81,22 @@ pub enum SecurityScheme {
         #[serde(skip_serializing_if = "Option::is_none")]
         bearer_format: Option<String>,
     },
+    /// HTTP Basic authentication
+    /// 
+    /// # Example
+    /// 
+    /// ```rust
+    /// use ultraapi::openapi::SecurityScheme;
+    /// 
+    /// let basic = SecurityScheme::Basic {
+    ///     realm: Some("UltraAPI".to_string()),
+    /// };
+    /// ```
+    Basic {
+        /// 認証realm（オプション）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        realm: Option<String>,
+    },
     /// API Key authentication
     ApiKey {
         name: String,
@@ -103,6 +119,15 @@ impl From<SecurityScheme> for SecuritySchemeDef {
                 scheme_type: "http".to_string(),
                 scheme: Some("bearer".to_string()),
                 bearer_format,
+                name: None,
+                location: None,
+                flows: None,
+                open_id_connect_url: None,
+            },
+            SecurityScheme::Basic { realm } => SecuritySchemeDef {
+                scheme_type: "http".to_string(),
+                scheme: Some("basic".to_string()),
+                bearer_format: realm,
                 name: None,
                 location: None,
                 flows: None,

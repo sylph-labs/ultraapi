@@ -3,12 +3,16 @@ pub mod lifespan;
 pub mod middleware;
 pub mod openapi;
 pub mod response_tasks;
+pub mod streaming;
 pub mod templates;
 pub mod test_client;
 
 use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use std::pin::Pin;
+
+use futures_util::stream::{StreamExt, TryStreamExt};
 use serde::Serialize;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -27,7 +31,38 @@ pub use schemars;
 pub use serde;
 pub use serde_json;
 pub use tokio_stream;
-pub use ultraapi_macros::{api_model, delete, get, head, options, patch, post, put, trace};
+
+/// OAuth2 モジュール
+/// 
+/// OAuth2 の実運用で必要となる型とヘルパを提供します。
+/// 
+/// # 含まれるもの
+/// 
+/// - `OAuth2PasswordRequestForm` - パスワードフローのリクエストフォーム
+/// - `TokenResponse` - トークンレスポンス
+/// - `OAuth2ErrorResponse` - エラーレスポンス
+/// - `TokenData` - トークンデータ
+/// - `AuthError` - 認証エラー
+/// - `OAuth2TokenValidator` - トークンバリデーター trait
+/// - `OpaqueTokenValidator` - 不透明トークンバリデーターの実装例
+/// 
+/// # Example
+/// 
+/// ```ignore
+/// use ultraapi::oauth2::{OAuth2PasswordRequestForm, TokenResponse};
+/// ```
+pub mod oauth2 {
+    pub use crate::middleware::{
+        OAuth2PasswordRequestForm,
+        TokenResponse,
+        OAuth2ErrorResponse,
+        TokenData,
+        OAuth2AuthError,
+        OAuth2TokenValidator,
+        OpaqueTokenValidator,
+        create_bearer_auth_error,
+    };
+}
 
 pub mod prelude {
     pub use crate::axum;
@@ -38,9 +73,36 @@ pub mod prelude {
     pub use crate::templates::{TemplateResponse, Templates, template_response};
     pub use crate::{
         lifespan::Lifecycle,
-        middleware::{CompressionConfig, CorsConfig, MiddlewareBuilder},
+        middleware::{
+            CompressionConfig, 
+            CorsConfig, 
+            MiddlewareBuilder,
+            OAuth2PasswordBearer,
+            OAuth2AuthorizationCodeBearer,
+            OptionalOAuth2PasswordBearer,
+            OptionalOAuth2AuthorizationCodeBearer,
+            OAuth2Scopes,
+            // OAuth2 Production Components
+            OAuth2PasswordRequestForm,
+            TokenResponse,
+            OAuth2ErrorResponse,
+            TokenData,
+            OAuth2AuthError,
+            OAuth2TokenValidator,
+            OpaqueTokenValidator,
+            create_bearer_auth_error,
+        },
     };
     pub use crate::{sse_data, sse_event};
+    pub use crate::streaming::{
+        reader_stream,
+        reader_stream_infallible,
+        bytes_stream,
+        iter_stream,
+        string_stream,
+        lines_stream,
+        map_to_bytes,
+    };
     pub use crate::{
         ApiError,
         CookieOptions,
@@ -54,6 +116,7 @@ pub mod prelude {
         ResponseModelOptions,
         Scope,
         State,
+        StreamingResponse,
         UltraApiApp,
         UltraApiRouter,
         Validate,
@@ -61,7 +124,7 @@ pub mod prelude {
         DependencyScope,
         test_client::TestClient,
     };
-    pub use axum::extract::{Form, Multipart, Query};
+    pub use axum::extract::{Form, Multipart, Path, Query};
     pub use axum_extra::extract::{CookieJar, TypedHeader};
     pub use ultraapi_macros::{api_model, delete, get, head, options, patch, post, put, sse, trace, ws};
 }
@@ -1250,6 +1313,210 @@ impl IntoResponse for RedirectResponse {
     }
 }
 
+/// ストリームレスポンス用型
+/// 
+/// FastAPI の `StreamingResponse` と同等の機能を提供.
+/// 任意のストリームを HTTP レスポンスとして返す際に使用.
+/// 
+/// # 特徴
+/// - 任意の `impl Stream<Item = Result<Bytes, E>>` または `impl Stream<Item = Bytes>` を受け取る
+/// - Content-Type（media_type）の指定が可能
+/// - カスタムヘッダの追加が可能
+/// - ステータスコードの指定が可能
+/// - エラーハンドリング: ストリーム内のエラーはログに出力され,接続は閉じられる
+/// 
+/// # Example
+/// 
+/// ```ignore
+/// use ultraapi::prelude::*;
+/// use tokio_stream::iter;
+/// 
+/// #[get("/stream")]
+/// #[response_class("stream")]
+/// async fn stream_handler() -> StreamingResponse {
+///     let stream = iter([
+///         Ok::<_, std::convert::Infallible>(Bytes::from("chunk1\n")),
+///         Ok(Bytes::from("chunk2\n")),
+///         Ok(Bytes::from("chunk3\n")),
+///     ]);
+///     StreamingResponse::new(stream)
+///         .content_type("text/plain")
+/// }
+/// 
+/// // .from_stream() を使用して errorless ストリームからも作成可能
+/// #[get("/stream/text")]
+/// #[response_class("stream")]
+/// async fn text_stream() -> StreamingResponse {
+///     let stream = iter([
+///         Bytes::from("line1\n"),
+///         Bytes::from("line2\n"),
+///         Bytes::from("line3\n"),
+///     ]);
+///     StreamingResponse::from_stream(stream)
+///         .content_type("text/plain")
+/// }
+/// ```
+pub struct StreamingResponse {
+    stream: Option<Pin<Box<dyn tokio_stream::Stream<Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send>>>,
+    content_type: Option<String>,
+    headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
+    status: StatusCode,
+}
+
+// Manual Debug implementation since we can't derive with the stream field
+impl std::fmt::Debug for StreamingResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamingResponse")
+            .field("stream", &"<stream>")
+            .field("content_type", &self.content_type)
+            .field("headers", &self.headers)
+            .field("status", &self.status)
+            .finish()
+    }
+}
+
+impl StreamingResponse {
+    /// 新しい StreamingResponse を作成
+    /// 
+    /// ストリームは `Result<Bytes, E>` を emit する. エラーが発生した場合はログに出力され,
+    /// 接続は閉じられる.
+    pub fn new<S, E>(stream: S) -> Self
+    where
+        S: tokio_stream::Stream<Item = Result<bytes::Bytes, E>> + Send + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        // Convert the error type to Box<dyn Error>
+        let mapped_stream = TryStreamExt::map_ok(stream, |b| b)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::new(e)
+            });
+        
+        Self {
+            stream: Some(Box::pin(mapped_stream)),
+            content_type: None,
+            headers: Vec::new(),
+            status: StatusCode::OK,
+        }
+    }
+
+    /// ストリームから StreamingResponse を作成（エラーハンドリングなし）
+    /// 
+    /// このメソッドは `Stream<Item = Bytes>` 用の便利コンストラクタ.
+    /// エラーが発生しないストリームに使用する.
+    pub fn from_stream<S>(stream: S) -> Self
+    where
+        S: tokio_stream::Stream<Item = bytes::Bytes> + Send + 'static,
+    {
+        // Convert regular stream to Result stream
+        let mapped_stream = StreamExt::map(stream, |b| -> Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(b)
+        });
+        
+        Self {
+            stream: Some(Box::pin(mapped_stream)),
+            content_type: None,
+            headers: Vec::new(),
+            status: StatusCode::OK,
+        }
+    }
+
+    /// エラーの発生し得ないストリームから StreamingResponse を作成
+    /// 
+    /// `Stream<Item = Result<Bytes, Infallible>>` 用のコンストラクタ.
+    pub fn from_infallible_stream<S>(stream: S) -> Self
+    where
+        S: tokio_stream::Stream<Item = Result<bytes::Bytes, std::convert::Infallible>> + Send + 'static,
+    {
+        // Infallible means the stream can never error, so we can unwrap safely
+        let mapped_stream = StreamExt::map(stream, |result| result.map_err(|never| match never {}));
+        
+        Self {
+            stream: Some(Box::pin(mapped_stream)),
+            content_type: None,
+            headers: Vec::new(),
+            status: StatusCode::OK,
+        }
+    }
+
+    /// Content-Type を設定
+    pub fn content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.content_type = Some(content_type.into());
+        self
+    }
+
+    /// ヘッダを追加
+    pub fn header(mut self, name: impl TryInto<axum::http::HeaderName>, value: impl TryInto<axum::http::HeaderValue>) -> Self {
+        if let (Ok(name), Ok(value)) = (name.try_into(), value.try_into()) {
+            self.headers.push((name, value));
+        }
+        self
+    }
+
+    /// ステータスコードを設定
+    pub fn status(mut self, status: impl TryInto<StatusCode>) -> Self {
+        if let Ok(status) = status.try_into() {
+            self.status = status;
+        }
+        self
+    }
+
+    /// ステータスコードを設定（u16 からの変換）
+    pub fn status_code(mut self, status: u16) -> Self {
+        if let Ok(status) = StatusCode::from_u16(status) {
+            self.status = status;
+        }
+        self
+    }
+
+    fn into_response_with_stream(self) -> Response {
+        let content_type = self.content_type
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let status = self.status;
+        
+        // Create a stream that logs errors and converts to http-body compatible stream
+        let stream = self.stream.unwrap();
+        
+        // Use a futures stream that http-body can consume
+        // This creates a stream of Result<Bytes, Box<dyn Error>>
+        let body_stream = StreamExt::map(stream, |result: Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>| -> Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>> {
+            match result {
+                Ok(bytes) => Ok(bytes),
+                Err(e) => {
+                    // Log the error - in production this would go to the configured logger
+                    eprintln!("StreamingResponse error: {}", e);
+                    // Return empty bytes to signal error to the client
+                    Ok(bytes::Bytes::new())
+                }
+            }
+        });
+        
+        // Convert to axum body using Body::from_stream
+        let body = axum::body::Body::from_stream(body_stream);
+        
+        let mut response = Response::new(body);
+        *response.status_mut() = status;
+        
+        // Set content type
+        response.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            content_type.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+        );
+        
+        // Set custom headers
+        for (name, value) in self.headers {
+            response.headers_mut().insert(name, value);
+        }
+        
+        response
+    }
+}
+
+impl IntoResponse for StreamingResponse {
+    fn into_response(self) -> Response {
+        self.into_response_with_stream()
+    }
+}
+
 /// Cookie オプション（Set-Cookie の属性）
 #[derive(Clone, Debug, Default)]
 pub struct CookieOptions {
@@ -2139,6 +2406,27 @@ impl UltraApiApp {
         )
     }
 
+    /// Add HTTP Basic security scheme to the OpenAPI specification
+    /// 
+    /// # Example
+    /// 
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    /// 
+    /// let app = UltraApiApp::new()
+    ///     .title("Secure API")
+    ///     .version("0.1.0")
+    ///     .basic_auth();
+    /// ```
+    pub fn basic_auth(self) -> Self {
+        self.security_scheme(
+            "basicAuth",
+            openapi::SecurityScheme::Basic {
+                realm: Some("UltraAPI".to_string()),
+            },
+        )
+    }
+
     /// Add OAuth2 security scheme with implicit flow
     ///
     /// # Example
@@ -2566,6 +2854,23 @@ impl UltraApiApp {
         self
     }
 
+    /// Enable GZip compression with custom configuration (FastAPI-compatible).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    /// use ultraapi::middleware::GZipConfig;
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .title("My API")
+    ///     .gzip_config(GZipConfig::new().minimum_size(512));
+    /// ```
+    pub fn gzip_config(mut self, config: middleware::GZipConfig) -> Self {
+        self.middleware = self.middleware.gzip_config(config);
+        self
+    }
+
     /// Enable compression with custom configuration.
     ///
     /// # Example
@@ -2598,29 +2903,12 @@ impl UltraApiApp {
     ///
     /// ```rust
     /// use ultraapi::prelude::*;
+    /// use ultraapi::middleware::RateLimitConfig;
     /// use std::time::Duration;
     ///
     /// let app = UltraApiApp::new()
     ///     .title("My API")
-    ///     .rate_limit(10, Duration::from_secs(60)); // 1分間に10リクエスト
-    /// ```
-    ///
-    /// カスタムキー関数を使用する場合:
-    ///
-    /// ```rust
-    /// use ultraapi::prelude::*;
-    /// use std::time::Duration;
-    ///
-    /// let app = UltraApiApp::new()
-    ///     .title("My API")
-    ///     .rate_limit(middleware::RateLimitConfig::new(10, Duration::from_secs(60))
-    ///         .with_key_fn(|req| {
-    ///             //  Authorization ヘッダーを使用
-    ///             req.headers()
-    ///                 .get("authorization")
-    ///                 .map(|h| h.to_str().unwrap_or("unknown").to_string())
-    ///                 .unwrap_or_else(|| "anonymous".to_string())
-    ///         }));
+    ///     .rate_limit(RateLimitConfig::new(10, Duration::from_secs(60)));
     /// ```
     pub fn rate_limit(mut self, config: middleware::RateLimitConfig) -> Self {
         self.middleware.rate_limit(config);
@@ -2638,10 +2926,12 @@ impl UltraApiApp {
     ///
     /// ```rust
     /// use ultraapi::prelude::*;
+    /// use ultraapi::middleware::RateLimitConfig;
+    /// use std::time::Duration;
     ///
     /// let app = UltraApiApp::new()
     ///     .title("My API")
-    ///     .rate_limit(10, 60); // 1分間に10リクエスト
+    ///     .rate_limit(RateLimitConfig::new(10, Duration::from_secs(60)));
     /// ```
     pub fn rate_limit_max(mut self, max_requests: u32, window_secs: u64) -> Self {
         let config = middleware::RateLimitConfig::new(
@@ -2666,7 +2956,42 @@ impl UltraApiApp {
         resolved
     }
 
-    pub fn into_router(mut self) -> Router {
+pub fn into_router(self) -> Router {
+        let (router, _runner) = self.into_router_with_lifespan();
+        router
+    }
+
+    /// Convert the application into a Router with integrated lifespan management
+    /// 
+    /// This method returns both the Router and a LifespanRunner that manages startup/shutdown hooks.
+    /// The Router will automatically run startup hooks on the first request (lazy startup).
+    /// The LifespanRunner can be used to trigger shutdown hooks when the application is done.
+    /// 
+    /// # Example
+    /// 
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    /// 
+    /// let app = UltraApiApp::new()
+    ///     .on_startup(|_state| {
+    ///         Box::pin(async {
+    ///             println!("Starting up!");
+    ///         })
+    ///     })
+    ///     .on_shutdown(|_state| {
+    ///         Box::pin(async {
+    ///             println!("Shutting down!");
+    ///         })
+    ///     });
+    /// 
+    /// let (router, runner) = app.into_router_with_lifespan();
+    /// 
+    /// // Use router for testing or serving...
+    /// 
+    /// // When done, trigger shutdown:
+    /// runner.shutdown().await;
+    /// ```
+    pub fn into_router_with_lifespan(mut self) -> (Router, lifespan::LifespanRunner) {
         let spec = self.generate_openapi_spec();
         let swagger_html = self.generate_swagger_html();
         let redoc_html = self.generate_redoc_html("/openapi.json");
@@ -2874,6 +3199,11 @@ impl UltraApiApp {
             app = app.layer(compression_config.clone().build());
         }
 
+        // Apply GZip compression if configured (FastAPI-compatible)
+        if let Some(ref gzip_config) = self.middleware.gzip_config {
+            app = app.layer(gzip_config.clone().build());
+        }
+
         // Apply rate limiting if configured
         if let Some(ref rate_limit_config) = self.middleware.rate_limit_config {
             app = app.layer(rate_limit_config.clone().build());
@@ -2924,31 +3254,24 @@ impl UltraApiApp {
         // This executes tasks added via BackgroundTasks dependency after response is sent
         app = app.layer(axum::middleware::from_fn(response_tasks::response_task_middleware));
 
-        app
+        // Create lifespan runner
+        let lifecycle = self.lifecycle.clone();
+        let lifespan_runner = lifespan::LifespanRunner::new(lifecycle, state);
+
+        // Add lifespan layer to the router
+        let layer_fn = lifespan_runner.clone().into_layer();
+        app = layer_fn(app);
+
+        (app, lifespan_runner)
     }
 
-    pub async fn serve(self, addr: &str) {
-        // Clone needed fields before consuming self
-        let depends_resolver = self.depends_resolver.clone();
-        let lifecycle = self.lifecycle.clone();
+pub async fn serve(self, addr: &str) {
+        // Build router + lifespan runner so that state and hooks are consistent
+        // across serve/TestClient/embedded usage.
+        let (app, runner) = self.into_router_with_lifespan();
 
-        let mut all_deps = self.deps.clone();
-        for router in &self.routers {
-            all_deps.extend(router.collect_deps());
-        }
-        for (type_id, override_val) in &self.dep_overrides {
-            all_deps.insert(*type_id, override_val.clone());
-        }
-
-        let state = AppState {
-            deps: Arc::new(all_deps),
-            depends_resolver,
-        };
-
-        // Run startup hooks
-        lifecycle.run_startup(&state).await;
-
-        let app = self.into_router();
+        // Run startup hooks before accepting requests (FastAPI-like behavior).
+        runner.ensure_startup().await;
 
         let listener = tokio::net::TcpListener::bind(addr)
             .await
@@ -2957,13 +3280,13 @@ impl UltraApiApp {
         println!("📖 Swagger UI available at http://{}/docs", addr);
 
         // Serve with graceful shutdown
-        let lifecycle_for_shutdown = lifecycle;
+        let runner_for_shutdown = runner.clone();
         axum::serve(listener, app)
             .with_graceful_shutdown(async move {
                 // Wait for shutdown signal
                 tokio::signal::ctrl_c().await.ok();
                 // Run shutdown hooks
-                lifecycle_for_shutdown.run_shutdown(&state).await;
+                runner_for_shutdown.shutdown().await;
             })
             .await
             .expect("Server error");

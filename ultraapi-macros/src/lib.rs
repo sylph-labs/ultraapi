@@ -86,6 +86,46 @@ fn is_multipart_type(ty: &Type) -> bool {
     false
 }
 
+/// Check if the type is OAuth2PasswordBearer
+fn is_oauth2_password_bearer_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "OAuth2PasswordBearer";
+        }
+    }
+    false
+}
+
+/// Check if the type is OptionalOAuth2PasswordBearer
+fn is_optional_oauth2_password_bearer_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "OptionalOAuth2PasswordBearer";
+        }
+    }
+    false
+}
+
+/// Check if the type is OAuth2AuthorizationCodeBearer
+fn is_oauth2_auth_code_bearer_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "OAuth2AuthorizationCodeBearer";
+        }
+    }
+    false
+}
+
+/// Check if the type is OptionalOAuth2AuthorizationCodeBearer
+fn is_optional_oauth2_auth_code_bearer_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "OptionalOAuth2AuthorizationCodeBearer";
+        }
+    }
+    false
+}
+
 fn get_type_name(ty: &Type) -> String {
     if let Type::Path(tp) = ty {
         if let Some(seg) = tp.path.segments.last() {
@@ -581,6 +621,38 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid multipart: {}", e)))?;
                 });
                 call_args.push(quote!(#pat));
+            } else if is_oauth2_password_bearer_type(ty) {
+                // OAuth2PasswordBearer extractor
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::middleware::OAuth2PasswordBearer =
+                        ultraapi::middleware::OAuth2PasswordBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+                });
+                call_args.push(quote!(#pat));
+            } else if is_optional_oauth2_password_bearer_type(ty) {
+                // OptionalOAuth2PasswordBearer extractor (auto_error=false)
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::middleware::OptionalOAuth2PasswordBearer =
+                        ultraapi::middleware::OptionalOAuth2PasswordBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+                });
+                call_args.push(quote!(#pat));
+            } else if is_oauth2_auth_code_bearer_type(ty) {
+                // OAuth2AuthorizationCodeBearer extractor
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::middleware::OAuth2AuthorizationCodeBearer =
+                        ultraapi::middleware::OAuth2AuthorizationCodeBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+                });
+                call_args.push(quote!(#pat));
+            } else if is_optional_oauth2_auth_code_bearer_type(ty) {
+                // OptionalOAuth2AuthorizationCodeBearer extractor (auto_error=false)
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::middleware::OptionalOAuth2AuthorizationCodeBearer =
+                        ultraapi::middleware::OptionalOAuth2AuthorizationCodeBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+                });
+                call_args.push(quote!(#pat));
             } else if path_params.contains(&param_name) {
                 if let syn::Pat::Ident(pi) = pat.as_ref() {
                     path_param_types.push((&pi.ident, ty));
@@ -591,6 +663,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 && !is_cookie_type(ty)
                 && !is_form_type(ty)
                 && !is_multipart_type(ty)
+                && !is_oauth2_password_bearer_type(ty)
+                && !is_optional_oauth2_password_bearer_type(ty)
+                && !is_oauth2_auth_code_bearer_type(ty)
+                && !is_optional_oauth2_auth_code_bearer_type(ty)
             {
                 has_body = true;
                 body_type = Some(ty);
@@ -666,6 +742,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         && !is_cookie_type(ty)
                         && !is_form_type(ty)
                         && !is_multipart_type(ty)
+                        && !is_oauth2_password_bearer_type(ty)
+                        && !is_optional_oauth2_password_bearer_type(ty)
+                        && !is_oauth2_auth_code_bearer_type(ty)
+                        && !is_optional_oauth2_auth_code_bearer_type(ty)
                     {
                         let n = quote!(#pat).to_string();
                         if !path_params.contains(&n) {

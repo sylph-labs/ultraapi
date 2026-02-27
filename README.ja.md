@@ -4,7 +4,7 @@
 [![docs.rs](https://docs.rs/ultraapi/badge.svg)](https://docs.rs/ultraapi)
 [![CI](https://github.com/sylph-labs/ultraapi/actions/workflows/ci.yml/badge.svg)](https://github.com/sylph-labs/ultraapi/actions/workflows/ci.yml)
 
-> English README: [README.en.md](./README.en.md)
+> English README: [README.md](./README.md)
 
 Rust で **FastAPI ライクな開発体験（DX）** を目指す、Axum ベースの Web フレームワークです。
 
@@ -23,6 +23,104 @@ Rust で **FastAPI ライクな開発体験（DX）** を目指す、Axum ベー
 - **Router 合成**: prefix / tags / security をルーター単位で合成
 - **WebSocket / SSE**: `#[ws]`, `#[sse]`
 - **Lifespan hooks**: startup/shutdown
+
+## Lifespan（起動/終了フック）
+
+UltraAPI は、アプリケーションの起動時と終了時に実行されるフックをサポートしています。
+
+### 基本的な使用例
+
+```rust
+use ultraapi::prelude::*;
+
+let app = UltraApiApp::new()
+    .lifecycle(|lifecycle| {
+        lifecycle
+            .on_startup(|state| {
+                Box::pin(async move {
+                    println!("アプリケーション起動中...");
+                    // データベース接続の確立
+                    // テンプレートのロード
+                })
+            })
+            .on_shutdown(|state| {
+                Box::pin(async move {
+                    println!("アプリケーション終了中...");
+                    // データベース接続のクローズ
+                    // リソースのクリーンアップ
+                })
+            })
+    });
+```
+
+### 3つの利用パターン
+
+#### 1. `serve()` を使用する場合（推奨）
+
+`serve()` メソッドを使用する場合、startup フックはサーバー起動時に実行され、shutdown フックは Ctrl+C によるgraceful shutdown 時に実行されます。
+
+```rust
+#[tokio::main]
+async fn main() {
+    UltraApiApp::new()
+        .lifecycle(|l| l
+            .on_startup(|_| Box::pin(async { println!(" startup!"); }))
+            .on_shutdown(|_| Box::pin(async { println!(" shutdown!"); }))
+        )
+        .serve("0.0.0.0:3000")
+        .await;
+}
+```
+
+#### 2. `TestClient` を使用する場合（テスト用）
+
+テストでは `TestClient` が自動的に lifecycle を管理します。startup は最初のリクエスト時に実行され、shutdown はテスト終了時（Drop 時）に実行されます。
+
+```rust
+#[tokio::test]
+async fn test_my_api() {
+    let app = UltraApiApp::new()
+        .lifecycle(|l| l
+            .on_startup(|_| Box::pin(async { /* テスト用リソース */ }))
+            .on_shutdown(|_| Box::pin(async { /* クリーンアップ */ }))
+        );
+    
+    let client = TestClient::new(app).await;
+    
+    // リクエストを実行（この時点で startup が実行される）
+    let response = client.get("/api/items").await;
+    
+    // テスト終了時に shutdown が自動的に呼ばれる
+    // または、明示的に呼ぶことも可能
+    client.shutdown().await;
+}
+```
+
+#### 3. `into_router_with_lifespan()` を使用する場合
+
+router を直接使用する場合（カスタムサーバーや他の用途）は、`into_router_with_lifespan()` を使用して lifecycle を統合できます。
+
+```rust
+let app = UltraApiApp::new()
+    .lifecycle(|l| l
+        .on_startup(|_| Box::pin(async { /* 起動処理 */ }))
+        .on_shutdown(|_| Box::pin(async { /* 終了処理 */ }))
+    );
+
+let (router, runner) = app.into_router_with_lifespan();
+
+// router を使用してサーバーを起動...
+// 例: axum::serve(listener, router).await
+
+// 終了時に shutdown を手動でトリガー
+runner.shutdown().await;
+```
+
+### 注意事項
+
+- **複数回実行の防止**: startup フックは最初のリクエスト時に一度だけ実行されます。重複実行を防ぐため、内部で適切なロックを使用しています。
+- **`into_router()` との併用**: 通常の `into_router()` メソッドは lifecycle を統合しません。lifecycle を使用する場合は `into_router_with_lifespan()` を使用してください。
+- **lazy startup**: `into_router_with_lifespan()` と `TestClient` の場合、startup は最初のリクエスト時に実行されます（lazy startup）。
 
 ## インストール
 
@@ -167,6 +265,193 @@ cargo run --bin ultraapi -- dev ultraapi-example --port 3001
 - `#[status(200)]` など: 成功時ステータスコード
 - `#[tag("name")]`: OpenAPI タグ
 - `#[security("bearer")]`: セキュリティ要件（OpenAPI と auth middleware に反映）
+- `#[security("basicAuth")]`: Basic認証（OpenAPI と auth middleware に反映）
+- `#[security("oauth2Password")]`: OAuth2 Password Flow（OpenAPI に反映）
+- `#[security("oauth2AuthCode")]`: OAuth2 Authorization Code Flow（OpenAPI に反映）
+- `#[security("oauth2Implicit")]`: OAuth2 Implicit Flow（OpenAPI に反映）
+
+#### OAuth2 依存オブジェクト
+
+UltraAPIはFastAPI互換のOAuth2依存オブジェクトを提供します：
+
+```rust
+use ultraapi::prelude::*;
+
+/// OAuth2PasswordBearer: auto_error=true（デフォルト）
+/// トークンが 없는場合は401エラーを返す
+#[get("/protected")]
+async fn protected_endpoint(token: OAuth2PasswordBearer) -> String {
+    format!("Token: {}", token.0)
+}
+
+/// OptionalOAuth2PasswordBearer: auto_error=false
+/// トークンがなくてもエラーではなくNoneを返す
+#[get("/optional-protected")]
+async fn optional_protected_endpoint(token: OptionalOAuth2PasswordBearer) -> String {
+    match token.0 {
+        Some(t) => format!("Token: {}", t),
+        None => "No token provided".to_string(),
+    }
+}
+
+/// OAuth2AuthorizationCodeBearer: Authorization Code Flow用
+#[get("/auth-code-protected")]
+async fn auth_code_protected_endpoint(token: OAuth2AuthorizationCodeBearer) -> String {
+    format!("Auth Code Token: {}", token.0)
+}
+```
+
+これらの依存オブジェクトを使用するには、セキュリティスキームをアプリに登録する必要があります：
+
+```rust
+let app = UltraApiApp::new()
+    .title("OAuth2 API")
+    .version("0.1.0")
+    .oauth2_password(
+        "oauth2Password",
+        "https://example.com/token",
+        [("read", "Read access"), ("write", "Write access")],
+    )
+    // または
+    .oauth2_authorization_code(
+        "oauth2AuthCode",
+        "https://example.com/authorize",
+        "https://example.com/token",
+        [("read", "Read access")],
+    );
+```
+
+- `OAuth2PasswordBearer` / `OptionalOAuth2PasswordBearer`: OAuth
+- `OAuth2AuthorizationCodeBearer` / `OptionalOAuth2AuthorizationCode2 Password Flow用Bearer`: OAuth2 Authorization Code Flow用
+- `auto_error=true`（デフォルト）: トークンがない場合は401を返す
+- `auto_error=false`（Optional* バージョン）: トークンがなくても200でNoneを返す
+
+#### OAuth2 実運用コンポーネント
+
+UltraAPIはOAuth2の実運用で必要となる型とヘルパを提供します。これらは `ultraapi::oauth2` または `ultraapi::prelude` からアクセスできます。
+
+```rust
+use ultraapi::oauth2::{
+    OAuth2PasswordRequestForm,
+    TokenResponse,
+    OAuth2ErrorResponse,
+    OpaqueTokenValidator,
+};
+```
+
+##### /token エンドポイントの実装例
+
+```rust
+use ultraapi::prelude::*;
+use ultraapi::middleware::create_bearer_auth_error;
+
+#[post("/token")]
+async fn token(
+    Form(form): Form<OAuth2PasswordRequestForm>,
+) -> Result<Json<TokenResponse>, Json<OAuth2ErrorResponse>> {
+    // パスワードグラントのみサポート
+    if !form.is_password_grant() {
+        return Err(Json(OAuth2ErrorResponse::unsupported_grant_type()));
+    }
+    
+    // ユーザー認証（実際にはデータベースなどで検証）
+    let valid = verify_credentials(&form.username, &form.password);
+    if !valid {
+        return Err(Json(OAuth2ErrorResponse::invalid_grant(
+            "Invalid username or password"
+        )));
+    }
+    
+    // トークン生成
+    let access_token = generate_token(&form.username, form.scopes());
+    let response = TokenResponse::with_scopes(access_token, 3600, form.scopes());
+    
+    Ok(Json(response))
+}
+```
+
+##### カスタムバリデーターの実装
+
+独自のトークンバリデーターを実装するには `OAuth2TokenValidator` trait を使用します：
+
+```rust
+use ultraapi::middleware::{OAuth2TokenValidator, TokenData, OAuth2AuthError};
+
+struct MyTokenValidator;
+
+#[async_trait::async_trait]
+impl OAuth2TokenValidator for MyTokenValidator {
+    async fn validate(&self, token: &str) -> Result<TokenData, OAuth2AuthError> {
+        // 独自の検証ロジックを実装
+        // （JWTデコード、データベース参照、Redis参照など）
+        
+        Ok(TokenData::new("user123".to_string(), vec!["read".to_string()]))
+    }
+}
+```
+
+##### 不透明トークンバリデーター（Opaque Token Validator）
+
+テストや単純な用途向けに `OpaqueTokenValidator` が含まれています：
+
+```rust
+use ultraapi::oauth2::OpaqueTokenValidator;
+
+// トークンを追加
+let validator = OpaqueTokenValidator::new()
+    .add_token("valid-token-1", "user1", vec!["read".to_string()])
+    .add_token("valid-token-2", "user2", vec!["read".to_string(), "write".to_string()]);
+
+// トークン検証
+let result = validator.validate("valid-token-1").await;
+match result {
+    Ok(token_data) => {
+        println!("User: {}", token_data.sub);
+        println!("Scopes: {:?}", token_data.scopes());
+    }
+    Err(e) => {
+        println!("Invalid token: {}", e);
+    }
+}
+
+// スコープ検証
+let token_data = validator.validate("valid-token-2").await.unwrap();
+let result = validator.validate_scopes(&token_data, &["read".to_string()]);
+// result Ok if user has "read" scope
+```
+
+##### 含まれる型
+
+| 型 | 説明 |
+|---|---|
+| `OAuth2PasswordRequestForm` | パスワードフローのリクエストフォーム |
+| `TokenResponse` | 成功時のトークンレスポンス |
+| `OAuth2ErrorResponse` | RFC 6749 準拠のエラーレスポンス |
+| `TokenData` | 検証されたトークンデータ |
+| `OAuth2AuthError` | トークン検証エラー |
+| `OAuth2TokenValidator` | バリデーター trait |
+| `OpaqueTokenValidator` | 不透明トークンバリデーターの実装例 |
+| `create_bearer_auth_error` | Bearer 認証エラー応答ヘルパー |
+
+##### security 属性と middleware の関係
+
+`#[security("oauth2Password")]` を使用する場合:
+
+1. OpenAPI の securityScheme に oauth2Password が追加される
+2. ミドルウェアが Authorization ヘッダを確認し、Bearer トークンを抽出
+3. トークンは `OAuth2PasswordBearer` 依存オブジェクトとしてルートに渡される
+4. カスタムバリデーターを使用する場合、`AuthLayer` または `AuthValidator` を設定
+
+スコープが必要な場合:
+```rust
+#[get("/admin")]
+#[security("oauth2Password:admin")]
+async fn admin_endpoint(token: OAuth2PasswordBearer) -> String {
+    // "admin" スコープが必要
+    format!("Admin access for: {}", token.0)
+}
+```
+
 - `#[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")]`: content-type
 - `#[response_model(...)]`: response shaping（include/exclude/by_alias）
 - `#[summary("...")]`: OpenAPI summary
@@ -379,6 +664,105 @@ async fn hello(templates: Dep<Templates>) -> impl IntoResponse {
 - `Templates::render(name, context)` - テンプレートをレンダリング
 - `template_response(templates, name, context)` - HTMLレスポンスを生成
 - `TemplateResponse` 型は `IntoResponse` を実装し、自動的に `text/html` content-type を設定
+
+## ストリームレスポンス (StreamingResponse)
+
+UltraAPI は `StreamingResponse` を提供し、FastAPI の `StreamingResponse` と同等の機能を実現します。任意のストリームを HTTP レスポンスとして返す際に使用します。
+
+### 特徴
+
+- 任意の `impl Stream<Item = Result<Bytes, E>>` または `impl Stream<Item = Bytes>` を受け取る
+- Content-Type（media_type）の指定が可能
+- カスタムヘッダの追加が可能
+- ステータスコードの指定が可能
+- エラーハンドリング: ストリーム内のエラーはログに出力され、接続は閉じられます
+
+### 基本的な使用法
+
+```rust
+use ultraapi::prelude::*;
+use tokio_stream::iter;
+
+/// ストリームエンドポイント
+#[get("/stream")]
+async fn stream_handler() -> StreamingResponse {
+    let stream = iter([
+        Ok::<_, std::convert::Infallible>(Bytes::from("chunk1\n")),
+        Ok(Bytes::from("chunk2\n")),
+        Ok(Bytes::from("chunk3\n")),
+    ]);
+    StreamingResponse::from_infallible_stream(stream)
+}
+```
+
+### カスタム Content-Type
+
+```rust
+use ultraapi::prelude::*;
+use tokio_stream::iter;
+
+/// テキストストリーム
+#[get("/stream/text")]
+async fn text_stream() -> StreamingResponse {
+    let stream = iter([
+        Ok(Bytes::from("line1\n")),
+        Ok(Bytes::from("line2\n")),
+        Ok(Bytes::from("line3\n")),
+    ]);
+    StreamingResponse::from_infallible_stream(stream)
+        .content_type("text/plain")
+}
+```
+
+### カスタムヘッダー
+
+```rust
+use ultraapi::prelude::*;
+use tokio_stream::iter;
+
+/// カスタムヘッダー付きストリーム
+#[get("/stream/headers")]
+async fn stream_with_headers() -> StreamingResponse {
+    let stream = iter([Ok(Bytes::from("data"))]);
+    StreamingResponse::from_infallible_stream(stream)
+        .header("X-Custom-Header", "custom-value")
+        .header("X-Request-Id", "12345")
+}
+```
+
+### カスタムステータスコード
+
+```rust
+use ultraapi::prelude::*;
+use tokio_stream::iter;
+use axum::http::StatusCode;
+
+/// パート内容レスポンス
+#[get("/stream/partial")]
+async fn partial_stream() -> StreamingResponse {
+    let stream = iter([Ok(Bytes::from("partial content"))]);
+    StreamingResponse::from_infallible_stream(stream)
+        .status(StatusCode::PARTIAL_CONTENT)
+}
+```
+
+### すべてのオプションを組み合わせ
+
+```rust
+use ultraapi::prelude::*;
+use tokio_stream::iter;
+use axum::http::StatusCode;
+
+/// フルオプション付きストリーム
+#[get("/stream/full")]
+async fn full_stream() -> StreamingResponse {
+    let stream = iter([Ok(Bytes::from("full response"))]);
+    StreamingResponse::from_infallible_stream(stream)
+        .content_type("application/json")
+        .header("X-Request-Id", "12345")
+        .status(StatusCode::OK)
+}
+```
 
 ## レスポンス Cookie
 
@@ -729,6 +1113,27 @@ let app = UltraApiApp::new()
     .title("My API")
     .version("1.0.0")
     .gzip();  // gzip + brotli 圧縮を有効化
+```
+
+### FastAPI 互換の GZip 設定（推奨）
+
+FastAPI の `GZipMiddleware` に近い設定として、`minimum_size`（圧縮する最小サイズ）や、圧縮対象の `content_types` を指定できます。
+
+```rust
+use ultraapi::prelude::*;
+use ultraapi::middleware::GZipConfig;
+
+let app = UltraApiApp::new()
+    .title("My API")
+    .version("1.0.0")
+    .gzip_config(
+        GZipConfig::new()
+            .minimum_size(1024)
+            .content_types(vec![
+                "text/*".to_string(),
+                "application/json".to_string(),
+            ]),
+    );
 ```
 
 ### カスタム設定
