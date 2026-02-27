@@ -13,7 +13,7 @@ Rust で **FastAPI ライクな開発体験（DX）** を目指す、Axum ベー
 - Docs UI: `GET /docs`（既定は Embedded: Scalar）
 - ReDoc UI: `GET /redoc`
 
-## 特徴（MVP）
+## 実装済み機能
 
 - **FastAPI 風のルート定義**: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
 - **serde/schemars から OpenAPI 自動生成**: `#[api_model]` の型定義から schema を生成
@@ -1219,6 +1219,56 @@ let client = TestClient::new(app).await;
 let router = UltraApiApp::new().into_router();
 let client = TestClient::new_router(router).await;
 ```
+
+## 実装済み機能一覧
+
+### コア機能
+- ✅ FastAPI 風ルートマクロ（`#[get]`、`#[post]`、`#[put]`、`#[delete]`、`#[patch]`、`#[head]`、`#[options]`、`#[trace]`）
+- ✅ 自動 OpenAPI 3.1 生成
+- ✅ 組み込み Swagger UI（`/docs`）および ReDoc（`/redoc`）
+- ✅ スキーマ生成のための serde/schemars 統合
+- ✅ `#[validate]` 属性による自動バリデーション
+- ✅ 依存性注入（`Dep<T>`、`State<T>`、`Depends<T>`）
+- ✅ クリーンアップ付き yield 依存性（Function/Request スコープ）
+- ✅ プレフィックス/タグ/セキュリティ伝播によるルーター合成
+
+### 認証・セキュリティ
+- ✅ Bearer 認証（JWT）
+- ✅ API キー認証（ヘッダー/クエリ/クッキー）
+- ✅ OAuth2 フロー（Implicit、Password、Client Credentials、Authorization Code）
+- ✅ OpenID Connect
+- ✅ ミドルウェアによるランタイム認証強制
+- ✅ スコープベースの認証
+- ✅ OAuth2 依存オブジェクト（`OAuth2PasswordBearer`、`OptionalOAuth2PasswordBearer` など）
+- ✅ OAuth2 実運用コンポーネント（`OAuth2PasswordRequestForm`、`TokenResponse` など）
+
+### レスポンス処理
+- ✅ レスポンスモデルシェイピング（include/exclude/by_alias）
+- ✅ レスポンスクラス指定（json/html/text/binary/stream/xml）
+- ✅ フィールドレベル属性（`#[read_only]`、`#[write_only]`、`#[alias]`）
+- ✅ `#[status]` によるカスタムステータスコード
+- ✅ カスタム例外によるグローバルエラーハンドリング
+- ✅ パニックキャッチ
+- ✅ レスポンス圧縮（GZip/Brotli）
+- ✅ ストリーミングデータ用 StreamingResponse
+- ✅ Cookie 設定用 CookieResponse
+
+### 高度な機能
+- ✅ 3 つの利用パターンを持つ Lifespan フック（startup/shutdown）
+- ✅ WebSocket サポート（`#[ws]`）
+- ✅ SSE サポート（`#[sse]`）
+- ✅ Webhooks（OpenAPI 3.1）
+- ✅ Callbacks（OpenAPI 3.1）
+- ✅ サブアプリケーション（mount）
+- ✅ 静的ファイル配信
+- ✅ Jinja2 風テンプレート
+- ✅ ファイルアップロード（Multipart）
+- ✅ テスト用 TestClient
+
+### 開発者ツール
+- ✅ アプリケーション実行用 CLI（`ultraapi` コマンド）
+- ✅ 開発モード
+- ✅ FastAPI との OpenAPI パリティのためのゴールデンテスト
 
 ## Examples
 
