@@ -24,6 +24,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Create trybuild directory
+        run: mkdir -p target/tests/target
+
       - name: Format check
         run: cargo fmt --all -- --check
 

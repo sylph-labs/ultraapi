@@ -125,35 +125,23 @@ pub async fn response_task_middleware(mut req: Request<Body>, next: Next) -> Res
             let task_name_log = task_name.clone();
 
             h.spawn(async move {
-                // パニックフックを設定
-                let prev_hook = panic::take_hook();
-                let task_name_for_hook = task_name_log.clone();
-
-                panic::set_hook(Box::new(move |panic_info| {
-                    let msg = panic_info
-                        .payload()
-                        .downcast_ref::<&str>()
-                        .unwrap_or(&"Unknown");
-                    let location = panic_info
-                        .location()
-                        .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-                        .unwrap_or_else(|| "unknown".to_string());
-                    eprintln!(
-                        "Background task panicked (recovering): task={}, message={}, location={}",
-                        task_name_for_hook, msg, location
-                    );
-                    prev_hook(panic_info);
-                }));
-
-                // パニックをキャッチ
+                // パニックをキャッチ（グローバル hook は変更しない）
                 let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                     task();
                 }));
 
-                if result.is_err() {
+                if let Err(panic_payload) = result {
+                    let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown".to_string()
+                    };
+
                     eprintln!(
-                        "Background task panicked and was caught: task={}",
-                        task_name_log
+                        "Background task panicked and was caught: task={}, message={}",
+                        task_name_log, msg
                     );
                 }
             });

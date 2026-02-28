@@ -1185,6 +1185,12 @@ let app = UltraApiApp::new()
     .session_cookies(SessionConfig::new("dev-secret").ttl(Duration::from_secs(3600)));
 ```
 
+## JWT（AuthLayer validator）ガイド
+
+JWT を `AuthLayer` の validator として統合する手順は `docs/jwt.ja.md` を参照してください。
+
+- `docs/jwt.ja.md`
+
 ## テストクライアント（TestClient）
 
 UltraAPI には、FastAPI ライクな `TestClient` が組み込まれています。サーバーを手動で起動せずに HTTP リクエストをテストできます。
