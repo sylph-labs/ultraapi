@@ -1,0 +1,10 @@
+[package]
+name = "graphql-example"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ultraapi = { path = "../../ultraapi", features = ["graphql"] }
+async-graphql = "7"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
