@@ -8,6 +8,10 @@ repository = "https://github.com/sylph-labs/ultraapi"
 keywords = ["axum", "fastapi", "openapi", "web", "async"]
 categories = ["asynchronous", "web-programming", "api-bindings"]
 
+[features]
+default = []
+graphql = ["async-graphql", "async-graphql-axum"]
+
 [dependencies]
 ultraapi-macros = { version = "0.1.0", path = "../ultraapi-macros" }
 axum = { version = "0.8", features = ["json", "form", "multipart", "ws", "query"] }
@@ -34,8 +38,12 @@ time = "0.3"
 reqwest = { version = "0.12", features = ["json", "multipart"] }
 base64 = "0.22"
 
+async-graphql = { version = "7", optional = true }
+async-graphql-axum = { version = "7", optional = true }
+
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "multipart", "gzip", "brotli"] }
 trybuild = "1"
 tempfile = "3"
 flate2 = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

@@ -1,3 +1,5 @@
+#[cfg(feature = "graphql")]
+pub mod graphql;
 pub mod grpc;
 pub mod lifespan;
 pub mod middleware;
@@ -352,6 +354,25 @@ impl<T: 'static + Send + Sync> std::ops::Deref for Dep<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.0
+    }
+}
+
+impl<T, S> axum::extract::FromRequest<S> for Dep<T>
+where
+    T: 'static + Send + Sync,
+    S: Send + Sync,
+{
+    type Rejection = axum::http::StatusCode;
+
+    async fn from_request(
+        req: axum::http::Request<axum::body::Body>,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        // Extract AppState from the request extensions
+        req.extensions()
+            .get::<AppState>()
+            .and_then(|state| state.get::<T>().map(Dep))
+            .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
     }
 }
 
@@ -1923,24 +1944,31 @@ pub struct ResolvedRoute {
 }
 
 impl ResolvedRoute {
+    /// Join two path segments, normalizing double slashes
+    fn join_paths(prefix: &str, base: &str) -> String {
+        if prefix.is_empty() {
+            base.to_string()
+        } else if base.is_empty() {
+            prefix.to_string()
+        } else {
+            // Normalize: remove trailing slash from prefix and leading slash from base if needed
+            let prefix = prefix.trim_end_matches('/');
+            if base.starts_with('/') {
+                format!("{}{}", prefix, base)
+            } else {
+                format!("{}/{}", prefix, base)
+            }
+        }
+    }
+
     /// Full path = prefix + route's original path
     pub fn full_path(&self) -> String {
-        let base = self.route_info.path;
-        if self.prefix.is_empty() {
-            base.to_string()
-        } else {
-            format!("{}{}", self.prefix, base)
-        }
+        Self::join_paths(&self.prefix, self.route_info.path)
     }
 
     /// Full axum path = prefix + route's original axum_path
     pub fn full_axum_path(&self) -> String {
-        let base = self.route_info.axum_path;
-        if self.prefix.is_empty() {
-            base.to_string()
-        } else {
-            format!("{}{}", self.prefix, base)
-        }
+        Self::join_paths(&self.prefix, self.route_info.axum_path)
     }
 
     /// Merged tags: router-level + route-level
@@ -2020,7 +2048,8 @@ impl UltraApiRouter {
         parent_tags: &[String],
         parent_security: &[String],
     ) -> Vec<ResolvedRoute> {
-        let full_prefix = format!("{}{}", parent_prefix, self.prefix);
+        // Use the same join logic as ResolvedRoute::full_path for consistency
+        let full_prefix = ResolvedRoute::join_paths(parent_prefix, &self.prefix);
         let mut merged_tags: Vec<String> = parent_tags.to_vec();
         for t in &self.tags {
             if !merged_tags.contains(t) {
@@ -2103,6 +2132,9 @@ pub struct UltraApiApp {
     error_handler: Option<CustomErrorHandler>,
     /// Catch panics in handlers and convert to 500 responses
     catch_panic: bool,
+    /// Custom route additions for advanced use cases (GraphQL, WebSocket, etc.)
+    custom_route_additions:
+        Vec<Box<dyn FnOnce(Router<AppState>) -> Router<AppState> + Send + Sync + 'static>>,
 }
 
 impl Default for UltraApiApp {
@@ -2135,6 +2167,7 @@ impl UltraApiApp {
             templates: None,
             error_handler: None,
             catch_panic: false,
+            custom_route_additions: Vec::new(),
         }
     }
 
@@ -2811,6 +2844,37 @@ impl UltraApiApp {
         self
     }
 
+    /// Register a custom axum route handler.
+    ///
+    /// This allows adding routes that don't fit the standard UltraAPI pattern,
+    /// such as GraphQL endpoints, WebSocket handlers, or other advanced use cases.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use ultraapi::prelude::*;
+    ///
+    /// async fn custom_handler() -> &'static str {
+    ///     "Hello"
+    /// }
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .route_axum("/custom", axum::routing::get(custom_handler));
+    /// ```
+    pub fn route_axum(
+        mut self,
+        path: &str,
+        method_router: axum::routing::MethodRouter<AppState>,
+    ) -> Self {
+        // Store as a closure that will be applied during router construction
+        let path = path.to_string();
+        self.custom_route_additions
+            .push(Box::new(move |app: Router<AppState>| {
+                app.route(&path, method_router)
+            }));
+        self
+    }
+
     /// Set the templates directory for rendering HTML templates.
     ///
     /// The templates will be registered as a dependency that can be injected via `Dep<Templates>`.
@@ -3233,7 +3297,8 @@ impl UltraApiApp {
 
             // Add routes with path prefix
             for r in sub_resolved {
-                let full_path = format!("{}{}", path, r.full_axum_path());
+                // Use join logic similar to ResolvedRoute for consistency
+                let full_path = ResolvedRoute::join_paths(&path, &r.full_axum_path());
                 let method_router = (r.route_info.method_router_fn)();
                 app = app.route(&full_path, method_router);
             }
@@ -3277,10 +3342,15 @@ impl UltraApiApp {
 
             // Add sub-app's static files with path prefix
             for (sub_path, dir) in sub_app.static_files.drain(..) {
-                let full_path = format!("{}{}", path, sub_path);
+                let full_path = ResolvedRoute::join_paths(&path, &sub_path);
                 let static_service = tower_http::services::ServeDir::new(dir);
                 app = app.nest_service(&full_path, static_service);
             }
+        }
+
+        // Apply custom route additions (for GraphQL, WebSocket, etc.)
+        for add_route in self.custom_route_additions {
+            app = add_route(app);
         }
 
         // Apply session cookies if configured

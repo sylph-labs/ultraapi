@@ -1697,8 +1697,19 @@ This will regenerate the golden snapshot at `tests/golden/openapi_fastapi_parity
 
 ## Examples
 
-- `examples/ultraapi-example`
-- `examples/grpc-example`
+- `examples/ultraapi-example` - Basic UltraAPI usage
+- `examples/grpc-example` - gRPC integration
+- `examples/graphql-example` - GraphQL integration (async-graphql)
+- `examples/sqlx-example` - SQLx (ORM) integration
+
+## Official Integration Examples
+
+UltraAPI provides official examples for popular integrations:
+
+| Integration | Example | Documentation |
+|------------|---------|---------------|
+| GraphQL | `examples/graphql-example` | [docs/graphql.md](./docs/graphql.md) |
+| SQLx (ORM) | `examples/sqlx-example` | [docs/sqlx.md](./docs/sqlx.md) |
 
 ## Implemented Features List
 
@@ -1734,6 +1745,8 @@ This will regenerate the golden snapshot at `tests/golden/openapi_fastapi_parity
 - ✅ CookieResponse for setting cookies
 
 ### Advanced Features
+- ✅ GraphQL helpers (optional feature: `graphql`) — see `docs/graphql.md`
+- ✅ SQLx integration (ORM with SQLite/PostgreSQL/MySQL) — see `docs/sqlx.md`
 - ✅ Lifespan hooks (startup/shutdown) with 3 usage patterns
 - ✅ WebSocket support (`#[ws]`)
 - ✅ SSE support (`#[sse]`)

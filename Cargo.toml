@@ -1,3 +1,3 @@
 [workspace]
-members = ["ultraapi", "ultraapi-macros", "examples/ultraapi-example", "examples/grpc-example", "examples/ultraapi-cli"]
+members = ["ultraapi", "ultraapi-macros", "examples/ultraapi-example", "examples/grpc-example", "examples/ultraapi-cli", "examples/graphql-example", "examples/sqlx-example"]
 resolver = "2"
