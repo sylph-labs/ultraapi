@@ -1187,9 +1187,9 @@ let app = UltraApiApp::new()
 
 ## JWT（AuthLayer validator）ガイド
 
-JWT を `AuthLayer` の validator として統合する手順は `docs/jwt.ja.md` を参照してください。
+JWT を `AuthLayer` の validator として統合する手順は `docs/jwt.md`（英語）を参照してください。
 
-- `docs/jwt.ja.md`
+- `docs/jwt.md`
 
 ## テストクライアント（TestClient）
 

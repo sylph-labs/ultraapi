@@ -330,6 +330,8 @@ let app = UltraApiApp::new()
 
 UltraAPI provides types and helpers needed for OAuth2 production use. These are accessible from `ultraapi::oauth2` or `ultraapi::prelude`.
 
+For a complete guide on JWT authentication with AuthLayer validator integration, see [`docs/jwt.md`](docs/jwt.md).
+
 ```rust
 use ultraapi::oauth2::{
     OAuth2PasswordRequestForm,

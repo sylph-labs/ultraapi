@@ -1,17 +1,17 @@
-# JWT（AuthLayer validator と統合）ガイド
+# JWT Authentication Guide (AuthLayer Validator Integration)
 
-UltraAPI では、FastAPI と同様に **Bearer トークン（JWT）** を `Authorization: Bearer <token>` で受け取り、ミドルウェア（AuthLayer）で検証できます。
+In UltraAPI, similar to FastAPI, you can receive **Bearer tokens (JWT)** via `Authorization: Bearer <token>` and validate them in middleware (AuthLayer).
 
-このガイドでは「JWT を検証する `AuthValidator`」を実装して、`#[security("bearer")]` で保護されたルートを **実行時に 401/403 で制御**する方法を説明します。
+This guide explains how to implement a JWT-validating `AuthValidator` and control routes protected with `#[security("bearer")]` at **runtime with 401/403 responses**.
 
-> 注意
-> - UltraAPI の `AuthValidator` は同期（sync）です。
-> - JWT の署名検証（HMAC/RS256 など）は同期処理で完結するため、`AuthValidator` に適しています。
-> - DB/Redis 参照が必要な場合は、検証結果キャッシュや別レイヤでの設計を検討してください。
+> **Note**
+> - UltraAPI's `AuthValidator` is synchronous.
+> - JWT signature verification (HMAC/RS256, etc.) completes synchronously, making it suitable for `AuthValidator`.
+> - For DB/Redis lookups, consider caching validation results or designing a separate layer.
 
 ---
 
-## 1) OpenAPI（ドキュメント）側の bearerAuth を登録
+## 1) Register bearerAuth in OpenAPI (Documentation)
 
 ```rust
 use ultraapi::prelude::*;
@@ -24,7 +24,7 @@ let app = UltraApiApp::new()
 
 ---
 
-## 2) ルート側で `#[security("bearer")]` を付ける
+## 2) Add `#[security("bearer")]` to Routes
 
 ```rust
 use ultraapi::prelude::*;
@@ -38,14 +38,13 @@ async fn me() -> String {
 
 ---
 
-## 3) AuthLayer（実行時 enforcement）を有効化する
+## 3) Enable AuthLayer (Runtime Enforcement)
 
-`middleware(|builder| ...)` で AuthLayer を有効化し、
-runtime の credential 抽出（Bearer）設定も追加します。
+Enable AuthLayer via `middleware(|builder| ...)` and configure runtime credential extraction (Bearer).
 
 ```rust
 use ultraapi::prelude::*;
-use ultraapi::middleware::{SecuritySchemeConfig};
+use ultraapi::middleware::SecuritySchemeConfig;
 
 let app = UltraApiApp::new()
     .title("My API")
@@ -53,23 +52,23 @@ let app = UltraApiApp::new()
     .bearer_auth()
     .middleware(|builder| {
         builder
-            .enable_auth() // まずは MockValidator で enforcement を有効化
+            .enable_auth() // First, enable enforcement with MockValidator
             .with_security_scheme(SecuritySchemeConfig::bearer("bearerAuth"))
     });
 ```
 
-本番では `enable_auth_with_validator(...)` を使って独自 validator を差し替えます。
+In production, use `enable_auth_with_validator(...)` to plug in your custom validator.
 
 ---
 
-## 4) JWT validator を実装する（例：jsonwebtoken を使用）
+## 4) Implement JWT Validator (Example: Using jsonwebtoken)
 
-以下は **実運用向けの最小構成**の例です（HS256）。
+Here's a **minimal production-ready** example (HS256):
 
 ```rust
 use ultraapi::middleware::{AuthError, AuthValidator, Credentials};
 
-// 例: jsonwebtoken を使う場合
+// Example: Using jsonwebtoken
 // use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
 
 #[derive(Clone)]
@@ -89,7 +88,7 @@ impl JwtValidator {
 
 impl AuthValidator for JwtValidator {
     fn validate(&self, credentials: &Credentials) -> Result<(), AuthError> {
-        // scheme は "bearer" を想定
+        // Expect "bearer" scheme
         if credentials.scheme.to_lowercase() != "bearer" {
             return Err(AuthError::unauthorized("Invalid auth scheme"));
         }
@@ -99,7 +98,7 @@ impl AuthValidator for JwtValidator {
             return Err(AuthError::unauthorized("Missing token"));
         }
 
-        // 実際の JWT 検証（例）
+        // Actual JWT verification (example)
         // let _data = decode::<Claims>(token, &self.decoding_key, &self.validation)
         //     .map_err(|_| AuthError::unauthorized("Invalid or expired token"))?;
 
@@ -111,19 +110,19 @@ impl AuthValidator for JwtValidator {
         _credentials: &Credentials,
         required_scopes: &[String],
     ) -> Result<(), AuthError> {
-        // 例: Claims の scopes/roles を照合して required_scopes を満たすかチェック
-        // UltraAPI の実装では required_scopes は SecuritySchemeConfig から渡されます。
+        // Example: Check Claims scopes/roles against required_scopes
+        // In UltraAPI, required_scopes are passed from SecuritySchemeConfig
         if required_scopes.is_empty() {
             return Ok(());
         }
 
-        // 必要に応じて 403 にする
+        // Return 403 if needed
         Err(AuthError::forbidden("Insufficient scope"))
     }
 }
 ```
 
-この `JwtValidator` をミドルウェアに登録します。
+Register this `JwtValidator` in middleware:
 
 ```rust
 use ultraapi::prelude::*;
@@ -144,9 +143,9 @@ let app = UltraApiApp::new()
 
 ---
 
-## 5) スコープ要件を追加する（任意）
+## 5) Add Scope Requirements (Optional)
 
-`SecuritySchemeConfig::with_scopes(...)` で **要求スコープ**を指定できます。
+Specify **required scopes** via `SecuritySchemeConfig::with_scopes(...)`.
 
 ```rust
 use ultraapi::middleware::SecuritySchemeConfig;
@@ -157,6 +156,6 @@ let scheme = SecuritySchemeConfig::bearer("bearerAuth")
 
 ---
 
-## 参考
+## References
 
-- `ultraapi/tests/security_tests.rs` に、runtime auth enforcement / scope validation の統合テストがあります
+- `ultraapi/tests/security_tests.rs` contains integration tests for runtime auth enforcement and scope validation
