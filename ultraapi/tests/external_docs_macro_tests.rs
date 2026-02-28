@@ -4,10 +4,7 @@ use ultraapi::prelude::*;
 #[get("/external-docs-test")]
 #[summary("External docs test")]
 #[deprecated]
-#[external_docs(
-    url = "https://example.com/docs",
-    description = "More details here",
-)]
+#[external_docs(url = "https://example.com/docs", description = "More details here")]
 async fn external_docs_test() -> String {
     "ok".to_string()
 }
@@ -40,8 +37,5 @@ async fn test_openapi_operation_has_external_docs_summary_and_deprecated() {
     assert_eq!(op["summary"], "External docs test");
     assert_eq!(op["deprecated"], true);
     assert_eq!(op["externalDocs"]["url"], "https://example.com/docs");
-    assert_eq!(
-        op["externalDocs"]["description"],
-        "More details here"
-    );
+    assert_eq!(op["externalDocs"]["description"], "More details here");
 }

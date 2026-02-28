@@ -13,11 +13,7 @@
 
 use std::sync::Arc;
 
-use axum::{
-    extract::Request,
-    middleware::Next,
-    Router,
-};
+use axum::{extract::Request, middleware::Next, Router};
 use tokio::sync::{Notify, OnceCell};
 
 use crate::AppState;

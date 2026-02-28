@@ -3,6 +3,7 @@ pub mod lifespan;
 pub mod middleware;
 pub mod openapi;
 pub mod response_tasks;
+pub mod session;
 pub mod streaming;
 pub mod templates;
 pub mod test_client;
@@ -33,11 +34,11 @@ pub use serde_json;
 pub use tokio_stream;
 
 /// OAuth2 モジュール
-/// 
+///
 /// OAuth2 の実運用で必要となる型とヘルパを提供します。
-/// 
+///
 /// # 含まれるもの
-/// 
+///
 /// - `OAuth2PasswordRequestForm` - パスワードフローのリクエストフォーム
 /// - `TokenResponse` - トークンレスポンス
 /// - `OAuth2ErrorResponse` - エラーレスポンス
@@ -45,97 +46,76 @@ pub use tokio_stream;
 /// - `AuthError` - 認証エラー
 /// - `OAuth2TokenValidator` - トークンバリデーター trait
 /// - `OpaqueTokenValidator` - 不透明トークンバリデーターの実装例
-/// 
+///
 /// # Example
-/// 
+///
 /// ```ignore
 /// use ultraapi::oauth2::{OAuth2PasswordRequestForm, TokenResponse};
 /// ```
 pub mod oauth2 {
     pub use crate::middleware::{
-        OAuth2PasswordRequestForm,
-        TokenResponse,
-        OAuth2ErrorResponse,
-        TokenData,
-        OAuth2AuthError,
-        OAuth2TokenValidator,
-        OpaqueTokenValidator,
-        create_bearer_auth_error,
+        create_bearer_auth_error, OAuth2AuthError, OAuth2ErrorResponse, OAuth2PasswordRequestForm,
+        OAuth2TokenValidator, OpaqueTokenValidator, TokenData, TokenResponse,
     };
 }
 
 pub mod prelude {
     pub use crate::axum;
     pub use crate::inventory;
+    pub use crate::response_tasks::{response_task_middleware, BackgroundTasks};
     pub use crate::schemars;
     pub use crate::serde;
-    pub use crate::response_tasks::{BackgroundTasks, response_task_middleware};
-    pub use crate::templates::{TemplateResponse, Templates, template_response};
+    pub use crate::session::{SameSite, Session, SessionConfig};
+    pub use crate::streaming::{
+        bytes_stream, iter_stream, lines_stream, map_to_bytes, reader_stream,
+        reader_stream_infallible, string_stream,
+    };
+    pub use crate::templates::{template_response, TemplateResponse, Templates};
     pub use crate::{
         lifespan::Lifecycle,
         middleware::{
-            CompressionConfig, 
-            CorsConfig, 
+            create_bearer_auth_error,
+            CompressionConfig,
+            CorsConfig,
+            GZipConfig,
             MiddlewareBuilder,
-            OAuth2PasswordBearer,
+            OAuth2AuthError,
             OAuth2AuthorizationCodeBearer,
-            OptionalOAuth2PasswordBearer,
-            OptionalOAuth2AuthorizationCodeBearer,
-            OAuth2Scopes,
+            OAuth2ErrorResponse,
+            OAuth2PasswordBearer,
             // OAuth2 Production Components
             OAuth2PasswordRequestForm,
-            TokenResponse,
-            OAuth2ErrorResponse,
-            TokenData,
-            OAuth2AuthError,
+            OAuth2Scopes,
             OAuth2TokenValidator,
             OpaqueTokenValidator,
-            create_bearer_auth_error,
+            OptionalOAuth2AuthorizationCodeBearer,
+            OptionalOAuth2PasswordBearer,
+            ResponseCacheConfig,
+            TokenData,
+            TokenResponse,
         },
     };
     pub use crate::{sse_data, sse_event};
-    pub use crate::streaming::{
-        reader_stream,
-        reader_stream_infallible,
-        bytes_stream,
-        iter_stream,
-        string_stream,
-        lines_stream,
-        map_to_bytes,
-    };
     pub use crate::{
-        ApiError,
-        CookieOptions,
-        CookieResponse,
-        Depends,
-        Dep,
-        FileResponse,
-        Generator,
-        RedirectResponse,
-        ResponseClass,
-        ResponseModelOptions,
-        Scope,
-        State,
-        StreamingResponse,
-        UltraApiApp,
-        UltraApiRouter,
-        Validate,
-        YieldDep,
-        DependencyScope,
-        test_client::TestClient,
+        test_client::{InProcessTestClient, TestClient, TestResponse},
+        ApiError, CookieOptions, CookieResponse, Dep, DependencyScope, Depends, FileResponse,
+        Generator, RedirectResponse, ResponseClass, ResponseModelOptions, Scope, State,
+        StreamingResponse, UltraApiApp, UltraApiRouter, Validate, YieldDep,
     };
     pub use axum::extract::{Form, Multipart, Path, Query};
     pub use axum_extra::extract::{CookieJar, TypedHeader};
-    pub use ultraapi_macros::{api_model, delete, get, head, options, patch, post, put, sse, trace, ws};
+    pub use ultraapi_macros::{
+        api_model, delete, get, head, options, patch, post, put, sse, trace, ws,
+    };
 }
 
 /// Global error handler type - converts any exception into an HTTP response
-/// 
+///
 /// The handler receives:
 /// - AppState for accessing dependencies  
 /// - The HTTP request (for context like path, method, headers)
 /// - The error/exception that was thrown (as Box<dyn Any>)
-/// 
+///
 /// Returns any type that implements `IntoResponse`
 pub type CustomErrorHandler = Arc<
     dyn Fn(
@@ -186,38 +166,38 @@ pub trait Validate {
 pub trait HasValidate: Validate {}
 
 /// Query/Form/Bodyパラメータのvalidationを行うラッパータイプ
-/// 
+///
 /// # 概要
-/// 
+///
 /// UltraAPIは、Query<T>パラメータ自動的にvalidate()を呼び出す機能を提供します。
 /// - `#[api_model]`でマークされた型（api_model型）は、validationが自動的に実行されます
 /// - api_modelでない型はvalidationをスキップします（no-op）
-/// 
+///
 /// # 動作原理
-/// 
+///
 /// 内部的にはinventory registryを使用してruntime時に型を判定します：
 /// 1. `#[api_model]`マクロは、validator情報をinventoryに登録します
 /// 2. ルート処理時に`ValidatedWrapper`を使用してvalidationを実行します
 /// 3. 登録されたvalidatorがある場合のみvalidationを呼び出します
-/// 
+///
 /// # 使用方法
-/// 
+///
 /// ```ignore
 /// #[api_model]
 /// struct MyQuery {
 ///     #[validate(minimum = 1)]
 ///     limit: i64,
 /// }
-/// 
+///
 /// #[get("/items")]
 /// async fn list_items(query: Query<MyQuery>) -> Vec<Item> {
 ///     // queryは自動的にvalidationされます
 ///     // validation失敗時は422エラーを返します
 /// }
 /// ```
-/// 
+///
 /// # Error Response
-/// 
+///
 /// validation失敗時のレスポンス形式はBody/Formと統一されています：
 /// ```json
 /// {
@@ -225,14 +205,14 @@ pub trait HasValidate: Validate {}
 ///     "details": ["limit must be at least 1"]
 /// }
 /// ```
-/// 
+///
 /// # OpenAPIとの統合
-/// 
+///
 /// QueryパラメータのOpenAPI schemaは自動的に生成されます：
 /// - requiredフィールド→OpenAPIのrequired配列に追加
 /// - nullable設定→OpenAPI schemaに反映
 /// - validate属性→OpenAPI schemaの制約として反映
-/// 
+///
 /// Registry entry for types that have Validate implementation (api_model types)
 /// Used by ValidatedWrapper to determine if a type should be validated at runtime.
 #[derive(Clone, Copy)]
@@ -246,7 +226,7 @@ pub struct ValidatorInfo {
 inventory::collect!(ValidatorInfo);
 
 /// Wrapper type for validated query/body/form parameters.
-/// 
+///
 /// This wrapper checks the inventory registry at runtime to determine if the inner type
 /// has validation logic (api_model types). If so, it calls validate(). Otherwise, it's a no-op.
 ///
@@ -261,7 +241,7 @@ impl<T: 'static> ValidatedWrapper<T> {
         // Get the simple type name (last segment of the full path)
         let full_type_name = std::any::type_name::<T>();
         let simple_name = full_type_name.rsplit("::").next().unwrap_or(full_type_name);
-        
+
         // Iterate through registered validators to find a match
         for validator in inventory::iter::<ValidatorInfo> {
             if validator.type_name == simple_name {
@@ -270,7 +250,7 @@ impl<T: 'static> ValidatedWrapper<T> {
                 return (validator.validate_fn)(any_ref);
             }
         }
-        
+
         // No validator found - no-op
         Ok(())
     }
@@ -446,7 +426,7 @@ pub enum Scope {
 ///     }
 /// }
 /// ```
-/// 
+///
 /// For type-erased usage in DependsResolver (internal)
 /// Uses boxed futures to be dyn-compatible
 #[async_trait::async_trait]
@@ -455,10 +435,17 @@ pub trait DynGenerator: Send + Sync + 'static {
     fn generate(
         self: Arc<Self>,
         scope: Scope,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Arc<dyn std::any::Any + Send + Sync>, DependencyError>> + Send>>;
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = Result<Arc<dyn std::any::Any + Send + Sync>, DependencyError>>
+                + Send,
+        >,
+    >;
 
     /// Cleanup hook called when the scope ends
-    fn cleanup(self: Arc<Self>) -> std::pin::Pin<Box<dyn Future<Output = Result<(), DependencyError>> + Send>>;
+    fn cleanup(
+        self: Arc<Self>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), DependencyError>> + Send>>;
 }
 
 /// Blanket implementation for any Generator<T>
@@ -471,7 +458,12 @@ where
     fn generate(
         self: Arc<Self>,
         scope: Scope,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Arc<dyn std::any::Any + Send + Sync>, DependencyError>> + Send>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<Output = Result<Arc<dyn std::any::Any + Send + Sync>, DependencyError>>
+                + Send,
+        >,
+    > {
         let result = Generator::generate(self.clone(), scope);
         Box::pin(async move {
             let output = result.await?;
@@ -480,7 +472,9 @@ where
         })
     }
 
-    fn cleanup(self: Arc<Self>) -> std::pin::Pin<Box<dyn Future<Output = Result<(), DependencyError>> + Send>> {
+    fn cleanup(
+        self: Arc<Self>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), DependencyError>> + Send>> {
         let result = Generator::cleanup(self.clone());
         Box::pin(result)
     }
@@ -492,7 +486,7 @@ struct Erased<T: ?Sized>(T);
 /// Marker trait for yield-based generators (FastAPI-style).
 ///
 /// Implementors yield a value, then run cleanup when the scope ends.
-/// 
+///
 /// # Example
 ///
 /// ```ignore
@@ -526,10 +520,7 @@ pub trait Generator: Send + Sync + 'static {
     type Error: std::fmt::Display + Send + Sync;
 
     /// Generate the dependency value
-    async fn generate(
-        self: Arc<Self>,
-        scope: Scope,
-    ) -> Result<Self::Output, Self::Error>;
+    async fn generate(self: Arc<Self>, scope: Scope) -> Result<Self::Output, Self::Error>;
 
     /// Cleanup hook called when the scope ends
     async fn cleanup(self: Arc<Self>) -> Result<(), Self::Error>;
@@ -554,13 +545,17 @@ impl<G: Generator> YieldDep<G> {
 
     /// Resolve the dependency (call generate)
     pub async fn resolve(&mut self) -> Result<Arc<G::Output>, DependencyError> {
-        let value = self.generator.clone().generate(self.scope).await
+        let value = self
+            .generator
+            .clone()
+            .generate(self.scope)
+            .await
             .map_err(|e| DependencyError {
                 dependency: std::any::type_name::<G>().to_string(),
                 message: e.to_string(),
                 chain: vec![],
             })?;
-        
+
         let arc_value = Arc::new(value);
         self.value = Some(arc_value.clone());
         Ok(arc_value)
@@ -576,7 +571,10 @@ impl<G: Generator> YieldDep<G> {
         if let Some(_value) = self.value.take() {
             // We need to reconstruct the generator with the value for cleanup
             // For simplicity, we'll use the generator directly
-            self.generator.clone().cleanup().await
+            self.generator
+                .clone()
+                .cleanup()
+                .await
                 .map_err(|e| DependencyError {
                     dependency: std::any::type_name::<G>().to_string(),
                     message: format!("Cleanup failed: {}", e),
@@ -713,7 +711,18 @@ impl<T: 'static + Send + Sync> std::ops::Deref for Depends<T> {
 struct DependsFunc {
     name: &'static str,
     // Store the function using type erasure with Arc
-    func: Arc<dyn Fn(AppState) -> std::pin::Pin<Box<dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, DependencyError>> + Send>> + Send + Sync>,
+    func: Arc<
+        dyn Fn(
+                AppState,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn Future<
+                            Output = Result<Box<dyn std::any::Any + Send + Sync>, DependencyError>,
+                        > + Send,
+                >,
+            > + Send
+            + Sync,
+    >,
     #[allow(dead_code)]
     output_type_name: &'static str,
 }
@@ -752,19 +761,23 @@ impl DependsResolver {
     }
 
     /// Register a yield-based dependency (generator with cleanup)
-    /// 
+    ///
     /// The generator will be called to produce the dependency value,
     /// and its cleanup will be called based on the specified scope.
-    pub fn register_yield<T, G>(&self, _marker: std::marker::PhantomData<T>, generator: G, scope: Scope)
-    where
+    pub fn register_yield<T, G>(
+        &self,
+        _marker: std::marker::PhantomData<T>,
+        generator: G,
+        scope: Scope,
+    ) where
         T: Send + Sync + 'static,
         G: Generator<Output = T, Error = DependencyError> + Send + Sync + 'static,
     {
         let name = std::any::type_name::<T>();
-        
+
         // Wrap the generator using the blanket impl of DynGenerator
         let wrapped: Arc<dyn DynGenerator + Send + Sync> = Arc::new(generator);
-        
+
         let mut generators = self.generators.write();
         generators.insert(
             TypeId::of::<T>(),
@@ -783,7 +796,8 @@ impl DependsResolver {
 
     /// Get the scope for a registered generator
     pub fn get_generator_scope<T: 'static>(&self) -> Option<Scope> {
-        self.generators.read()
+        self.generators
+            .read()
             .get(&TypeId::of::<T>())
             .map(|entry| entry.scope)
     }
@@ -794,16 +808,21 @@ impl DependsResolver {
         _state: &AppState,
         dependency_scope: &DependencyScope,
     ) -> Result<Arc<dyn std::any::Any + Send + Sync>, DependencyError> {
-        let entry = self.generators.read()
+        let entry = self
+            .generators
+            .read()
             .get(&TypeId::of::<T>())
             .cloned()
             .ok_or_else(|| DependencyError::missing(std::any::type_name::<T>()))?;
-        
+
         let generator = entry.generator.clone();
         let scope = entry.scope;
 
         // Generate the value
-        let value = generator.clone().generate(scope).await
+        let value = generator
+            .clone()
+            .generate(scope)
+            .await
             .map_err(|e| DependencyError {
                 dependency: entry.name.to_string(),
                 message: e.to_string(),
@@ -847,7 +866,21 @@ impl DependsResolver {
         let name = std::any::type_name::<T>();
         let output_type_name = name;
 
-        let func_arc: Arc<dyn Fn(AppState) -> std::pin::Pin<Box<dyn Future<Output = Result<Box<dyn std::any::Any + Send + Sync>, DependencyError>> + Send>> + Send + Sync> = Arc::new(move |state: AppState| {
+        let func_arc: Arc<
+            dyn Fn(
+                    AppState,
+                ) -> std::pin::Pin<
+                    Box<
+                        dyn Future<
+                                Output = Result<
+                                    Box<dyn std::any::Any + Send + Sync>,
+                                    DependencyError,
+                                >,
+                            > + Send,
+                    >,
+                > + Send
+                + Sync,
+        > = Arc::new(move |state: AppState| {
             let future = func(state);
             Box::pin(async move {
                 match future.await {
@@ -940,12 +973,10 @@ impl DependsResolver {
 
             // Convert Box<dyn Any + Send + Sync> to Arc<T>
             match boxed_result {
-                Ok(boxed) => {
-                    match boxed.downcast::<T>() {
-                        Ok(t) => Ok(Arc::new(*t)),
-                        Err(_) => Err(DependencyError::missing(std::any::type_name::<T>())),
-                    }
-                }
+                Ok(boxed) => match boxed.downcast::<T>() {
+                    Ok(t) => Ok(Arc::new(*t)),
+                    Err(_) => Err(DependencyError::missing(std::any::type_name::<T>())),
+                },
                 Err(e) => Err(e),
             }
         } else {
@@ -955,28 +986,28 @@ impl DependsResolver {
     }
 
     /// Register a dependency function along with its dependency chain info.
-    /// 
+    ///
     /// This enables automatic resolution of nested dependencies. When resolving,
     /// the resolver will first resolve any dependencies listed in `depends_on`.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// use ultraapi::prelude::*;
     /// use std::sync::Arc;
-    /// 
+    ///
     /// #[derive(Clone)]
     /// struct DbPool { connection_string: String }
-    /// 
+    ///
     /// #[derive(Clone)]
     /// struct UserRepository { pool: Arc<DbPool> }
-    /// 
+    ///
     /// // A dependency that needs another dependency
     /// async fn get_user_repo(state: AppState) -> Result<Arc<UserRepository>, DependencyError> {
     ///     let pool = state.get::<DbPool>().ok_or_else(|| DependencyError::missing("DbPool"))?;
     ///     Ok(Arc::new(UserRepository { pool }))
     /// }
-    /// 
+    ///
     /// // Register with dependency chain info
     /// resolver.register_with_deps(
     ///     std::marker::PhantomData::<UserRepository>,
@@ -984,15 +1015,19 @@ impl DependsResolver {
     ///     vec![TypeId::of::<DbPool>()],  // UserRepository depends on DbPool
     /// );
     /// ```
-    pub fn register_with_deps<T, F, R>(&self, _marker: std::marker::PhantomData<T>, func: F, depends_on: Vec<TypeId>)
-    where
+    pub fn register_with_deps<T, F, R>(
+        &self,
+        _marker: std::marker::PhantomData<T>,
+        func: F,
+        depends_on: Vec<TypeId>,
+    ) where
         T: Send + Sync + 'static,
         F: Fn(AppState) -> R + Send + Sync + 'static,
         R: Future<Output = Result<T, DependencyError>> + Send + 'static,
     {
         // First register the function
         self.register(std::marker::PhantomData::<T>, func);
-        
+
         // Then register the dependency chain info
         let mut chains = self.dep_chains.write();
         chains.insert(TypeId::of::<T>(), depends_on);
@@ -1151,18 +1186,18 @@ impl ResponseClass {
 }
 
 /// ファイルレスポンス用型
-/// 
+///
 /// `#[response_class("file")]` が指定されたエンドポイントの返り値として使用します。
 /// 以下の機能を提供します:
 /// - ファイルのバイト列（Vec<u8>）
 /// - オプションのファイル名（Content-Disposition header で attachment; filename="..." を付与）
 /// - オプションの content-type（指定がない場合は application/octet-stream）
-/// 
+///
 /// # Example
-/// 
+///
 /// ```ignore
 /// use ultraapi::prelude::*;
-/// 
+///
 /// #[get("/download")]
 /// #[response_class("file")]
 /// async fn download_file() -> FileResponse {
@@ -1220,7 +1255,9 @@ impl FileResponse {
 
     /// Content-Type を取得（指定がない場合はデフォルト値を返す）
     pub fn get_content_type(&self) -> &str {
-        self.content_type.as_deref().unwrap_or("application/octet-stream")
+        self.content_type
+            .as_deref()
+            .unwrap_or("application/octet-stream")
     }
 }
 
@@ -1235,15 +1272,17 @@ impl IntoResponse for FileResponse {
         // Get content_type before consuming self.bytes
         let content_type = self.get_content_type().to_string();
         let filename = self.filename.clone();
-        
+
         let mut response = axum::response::Response::new(self.bytes.into());
-        
+
         // Content-Type を設定
         response.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
-            content_type.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+            content_type
+                .parse()
+                .unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
         );
-        
+
         // filename が指定されていれば Content-Disposition を設定
         if let Some(filename) = &filename {
             let disposition = format!("attachment; filename=\"{}\"", filename);
@@ -1252,7 +1291,7 @@ impl IntoResponse for FileResponse {
                 disposition.parse().unwrap(),
             );
         }
-        
+
         response
     }
 }
@@ -1314,23 +1353,23 @@ impl IntoResponse for RedirectResponse {
 }
 
 /// ストリームレスポンス用型
-/// 
+///
 /// FastAPI の `StreamingResponse` と同等の機能を提供.
 /// 任意のストリームを HTTP レスポンスとして返す際に使用.
-/// 
+///
 /// # 特徴
 /// - 任意の `impl Stream<Item = Result<Bytes, E>>` または `impl Stream<Item = Bytes>` を受け取る
 /// - Content-Type（media_type）の指定が可能
 /// - カスタムヘッダの追加が可能
 /// - ステータスコードの指定が可能
 /// - エラーハンドリング: ストリーム内のエラーはログに出力され,接続は閉じられる
-/// 
+///
 /// # Example
-/// 
+///
 /// ```ignore
 /// use ultraapi::prelude::*;
 /// use tokio_stream::iter;
-/// 
+///
 /// #[get("/stream")]
 /// #[response_class("stream")]
 /// async fn stream_handler() -> StreamingResponse {
@@ -1342,7 +1381,7 @@ impl IntoResponse for RedirectResponse {
 ///     StreamingResponse::new(stream)
 ///         .content_type("text/plain")
 /// }
-/// 
+///
 /// // .from_stream() を使用して errorless ストリームからも作成可能
 /// #[get("/stream/text")]
 /// #[response_class("stream")]
@@ -1357,7 +1396,15 @@ impl IntoResponse for RedirectResponse {
 /// }
 /// ```
 pub struct StreamingResponse {
-    stream: Option<Pin<Box<dyn tokio_stream::Stream<Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send>>>,
+    stream: Option<
+        Pin<
+            Box<
+                dyn tokio_stream::Stream<
+                        Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>,
+                    > + Send,
+            >,
+        >,
+    >,
     content_type: Option<String>,
     headers: Vec<(axum::http::HeaderName, axum::http::HeaderValue)>,
     status: StatusCode,
@@ -1377,7 +1424,7 @@ impl std::fmt::Debug for StreamingResponse {
 
 impl StreamingResponse {
     /// 新しい StreamingResponse を作成
-    /// 
+    ///
     /// ストリームは `Result<Bytes, E>` を emit する. エラーが発生した場合はログに出力され,
     /// 接続は閉じられる.
     pub fn new<S, E>(stream: S) -> Self
@@ -1387,10 +1434,8 @@ impl StreamingResponse {
     {
         // Convert the error type to Box<dyn Error>
         let mapped_stream = TryStreamExt::map_ok(stream, |b| b)
-            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                Box::new(e)
-            });
-        
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) });
+
         Self {
             stream: Some(Box::pin(mapped_stream)),
             content_type: None,
@@ -1400,7 +1445,7 @@ impl StreamingResponse {
     }
 
     /// ストリームから StreamingResponse を作成（エラーハンドリングなし）
-    /// 
+    ///
     /// このメソッドは `Stream<Item = Bytes>` 用の便利コンストラクタ.
     /// エラーが発生しないストリームに使用する.
     pub fn from_stream<S>(stream: S) -> Self
@@ -1408,10 +1453,11 @@ impl StreamingResponse {
         S: tokio_stream::Stream<Item = bytes::Bytes> + Send + 'static,
     {
         // Convert regular stream to Result stream
-        let mapped_stream = StreamExt::map(stream, |b| -> Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(b)
-        });
-        
+        let mapped_stream = StreamExt::map(
+            stream,
+            |b| -> Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>> { Ok(b) },
+        );
+
         Self {
             stream: Some(Box::pin(mapped_stream)),
             content_type: None,
@@ -1421,15 +1467,17 @@ impl StreamingResponse {
     }
 
     /// エラーの発生し得ないストリームから StreamingResponse を作成
-    /// 
+    ///
     /// `Stream<Item = Result<Bytes, Infallible>>` 用のコンストラクタ.
     pub fn from_infallible_stream<S>(stream: S) -> Self
     where
-        S: tokio_stream::Stream<Item = Result<bytes::Bytes, std::convert::Infallible>> + Send + 'static,
+        S: tokio_stream::Stream<Item = Result<bytes::Bytes, std::convert::Infallible>>
+            + Send
+            + 'static,
     {
         // Infallible means the stream can never error, so we can unwrap safely
         let mapped_stream = StreamExt::map(stream, |result| result.map_err(|never| match never {}));
-        
+
         Self {
             stream: Some(Box::pin(mapped_stream)),
             content_type: None,
@@ -1445,7 +1493,11 @@ impl StreamingResponse {
     }
 
     /// ヘッダを追加
-    pub fn header(mut self, name: impl TryInto<axum::http::HeaderName>, value: impl TryInto<axum::http::HeaderValue>) -> Self {
+    pub fn header(
+        mut self,
+        name: impl TryInto<axum::http::HeaderName>,
+        value: impl TryInto<axum::http::HeaderValue>,
+    ) -> Self {
         if let (Ok(name), Ok(value)) = (name.try_into(), value.try_into()) {
             self.headers.push((name, value));
         }
@@ -1469,13 +1521,14 @@ impl StreamingResponse {
     }
 
     fn into_response_with_stream(self) -> Response {
-        let content_type = self.content_type
+        let content_type = self
+            .content_type
             .unwrap_or_else(|| "application/octet-stream".to_string());
         let status = self.status;
-        
+
         // Create a stream that logs errors and converts to http-body compatible stream
         let stream = self.stream.unwrap();
-        
+
         // Use a futures stream that http-body can consume
         // This creates a stream of Result<Bytes, Box<dyn Error>>
         let body_stream = StreamExt::map(stream, |result: Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>| -> Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>> {
@@ -1489,24 +1542,26 @@ impl StreamingResponse {
                 }
             }
         });
-        
+
         // Convert to axum body using Body::from_stream
         let body = axum::body::Body::from_stream(body_stream);
-        
+
         let mut response = Response::new(body);
         *response.status_mut() = status;
-        
+
         // Set content type
         response.headers_mut().insert(
             axum::http::header::CONTENT_TYPE,
-            content_type.parse().unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
+            content_type
+                .parse()
+                .unwrap_or_else(|_| "application/octet-stream".parse().unwrap()),
         );
-        
+
         // Set custom headers
         for (name, value) in self.headers {
             response.headers_mut().insert(name, value);
         }
-        
+
         response
     }
 }
@@ -1586,8 +1641,11 @@ impl<T> CookieResponse<T> {
     }
 
     pub fn cookie(mut self, name: &str, value: &str) -> Self {
-        self.cookies
-            .push((name.to_string(), value.to_string(), CookieOptions::default()));
+        self.cookies.push((
+            name.to_string(),
+            value.to_string(),
+            CookieOptions::default(),
+        ));
         self
     }
 
@@ -1596,7 +1654,8 @@ impl<T> CookieResponse<T> {
         F: FnOnce(CookieOptions) -> CookieOptions,
     {
         let opts = f(CookieOptions::default());
-        self.cookies.push((name.to_string(), value.to_string(), opts));
+        self.cookies
+            .push((name.to_string(), value.to_string(), opts));
         self
     }
 }
@@ -1605,12 +1664,8 @@ impl<T: serde::Serialize> IntoResponse for CookieResponse<T> {
     fn into_response(self) -> Response {
         let body = serde_json::to_string(&self.body)
             .unwrap_or_else(|_| r#"{"error":"Internal server error"}"#.to_string());
-        let mut res = (
-            StatusCode::OK,
-            [("content-type", "application/json")],
-            body,
-        )
-            .into_response();
+        let mut res =
+            (StatusCode::OK, [("content-type", "application/json")], body).into_response();
 
         for (name, value, opts) in self.cookies {
             let mut cookie = format!("{}={}", name, value);
@@ -1637,17 +1692,15 @@ impl<T: serde::Serialize> IntoResponse for CookieResponse<T> {
                 cookie.push_str("; HttpOnly");
             }
 
-            res.headers_mut().append(
-                axum::http::header::SET_COOKIE,
-                cookie.parse().unwrap(),
-            );
+            res.headers_mut()
+                .append(axum::http::header::SET_COOKIE, cookie.parse().unwrap());
         }
 
         res
     }
 }
 
-impl ResponseModelOptions { 
+impl ResponseModelOptions {
     /// Apply response model shaping to a serde_json::Value
     /// This method handles include/exclude filtering only (no alias conversion)
     pub fn apply(&self, value: serde_json::Value) -> serde_json::Value {
@@ -1655,42 +1708,50 @@ impl ResponseModelOptions {
     }
 
     /// Apply response model shaping with alias support
-    /// 
+    ///
     /// Steps:
     /// 1. If aliases provided, normalize keys from alias names to field names
     /// 2. Apply include/exclude filtering using field names
     /// 3. If by_alias=true, convert field names back to alias names for output
-    /// 
+    ///
     /// # Arguments
     /// * `value` - The JSON value to transform
     /// * `type_name` - Optional type name to look up alias mappings
     /// * `by_alias` - Whether to use alias names in output (true) or field names (false)
-    pub fn apply_with_aliases(&self, value: serde_json::Value, type_name: Option<&str>, by_alias: bool) -> serde_json::Value {
+    pub fn apply_with_aliases(
+        &self,
+        value: serde_json::Value,
+        type_name: Option<&str>,
+        by_alias: bool,
+    ) -> serde_json::Value {
         // Get alias mapping if type_name provided
         let aliases = type_name.and_then(|tn| get_field_aliases(tn));
-        
+
         // Build reverse mapping (alias -> field_name)
         let reverse_aliases: std::collections::HashMap<String, String> = aliases
             .as_ref()
             .map(|a| a.iter().map(|(k, v)| (v.clone(), k.clone())).collect())
             .unwrap_or_default();
-        
+
         // If we have aliases, serde serialized with aliases, so we need to convert
         let has_aliases = !reverse_aliases.is_empty();
-        
+
         match value {
             serde_json::Value::Object(map) => {
                 let mut result = serde_json::Map::new();
-                
+
                 for (key, val) in map {
                     // Step 1: Normalize key to field name if we have aliases
                     let field_name = if has_aliases {
                         // Try to find field name from alias, fall back to key if not found
-                        reverse_aliases.get(&key).cloned().unwrap_or_else(|| key.clone())
+                        reverse_aliases
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or_else(|| key.clone())
                     } else {
                         key.clone()
                     };
-                    
+
                     // Step 2: Apply include/exclude using field names
                     let should_include = match (&self.include, &self.exclude) {
                         // If include is specified, only include those fields
@@ -1700,15 +1761,15 @@ impl ResponseModelOptions {
                         // If only exclude is specified, exclude listed fields
                         (None, Some(exclude_list)) => {
                             !exclude_list.iter().any(|f| *f == field_name.as_str())
-                        },
+                        }
                         // No filtering
                         (None, None) => true,
                     };
-                    
+
                     if should_include {
                         // Recursively apply to nested objects
                         let transformed_val = self.apply_with_aliases(val, type_name, by_alias);
-                        
+
                         // Step 3: Convert output key based on by_alias setting
                         let output_key = if by_alias && has_aliases {
                             // Convert field name back to alias for output
@@ -1720,17 +1781,19 @@ impl ResponseModelOptions {
                             // Keep field name
                             field_name
                         };
-                        
+
                         result.insert(output_key, transformed_val);
                     }
                 }
-                
+
                 serde_json::Value::Object(result)
             }
             // For arrays, apply to each element
-            serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(arr.into_iter().map(|v| self.apply_with_aliases(v, type_name, by_alias)).collect())
-            }
+            serde_json::Value::Array(arr) => serde_json::Value::Array(
+                arr.into_iter()
+                    .map(|v| self.apply_with_aliases(v, type_name, by_alias))
+                    .collect(),
+            ),
             // Other values pass through unchanged
             other => other,
         }
@@ -1844,7 +1907,7 @@ inventory::collect!(SchemaInfo);
 
 /// Field alias mapping: field_name -> alias_name
 /// Used by response_model shaping to convert between field names and aliases
-/// 
+///
 /// We store a function that returns the aliases HashMap, since HashMap cannot be
 /// constructed in const context but OnceLock can be used for lazy initialization.
 pub struct FieldAliasInfo {
@@ -2332,7 +2395,7 @@ impl UltraApiApp {
     }
 
     /// Add a webhook to the OpenAPI spec.
-    /// 
+    ///
     /// Webhooks are defined at the API level (not tied to a specific route).
     /// They will appear in the `webhooks` section of the OpenAPI spec.
     ///
@@ -2362,7 +2425,7 @@ impl UltraApiApp {
     }
 
     /// Add a callback to an existing route's OpenAPI operation.
-    /// 
+    ///
     /// Callbacks are attached to a specific owner route and will appear in the
     /// `callbacks` section of that route's operation in the OpenAPI spec.
     ///
@@ -2407,12 +2470,12 @@ impl UltraApiApp {
     }
 
     /// Add HTTP Basic security scheme to the OpenAPI specification
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// use ultraapi::prelude::*;
-    /// 
+    ///
     /// let app = UltraApiApp::new()
     ///     .title("Secure API")
     ///     .version("0.1.0")
@@ -2461,10 +2524,8 @@ impl UltraApiApp {
         };
         let mut flows = openapi::OAuth2Flows::default();
         flows.implicit = Some(flow);
-        self.security_schemes.insert(
-            name.to_string(),
-            openapi::SecurityScheme::OAuth2(flows),
-        );
+        self.security_schemes
+            .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self
     }
 
@@ -2502,10 +2563,8 @@ impl UltraApiApp {
         };
         let mut flows = openapi::OAuth2Flows::default();
         flows.password = Some(flow);
-        self.security_schemes.insert(
-            name.to_string(),
-            openapi::SecurityScheme::OAuth2(flows),
-        );
+        self.security_schemes
+            .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self
     }
 
@@ -2543,10 +2602,8 @@ impl UltraApiApp {
         };
         let mut flows = openapi::OAuth2Flows::default();
         flows.client_credentials = Some(flow);
-        self.security_schemes.insert(
-            name.to_string(),
-            openapi::SecurityScheme::OAuth2(flows),
-        );
+        self.security_schemes
+            .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self
     }
 
@@ -2586,10 +2643,8 @@ impl UltraApiApp {
         };
         let mut flows = openapi::OAuth2Flows::default();
         flows.authorization_code = Some(flow);
-        self.security_schemes.insert(
-            name.to_string(),
-            openapi::SecurityScheme::OAuth2(flows),
-        );
+        self.security_schemes
+            .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self
     }
 
@@ -2717,23 +2772,23 @@ impl UltraApiApp {
     }
 
     /// Mount a sub-application at the given path.
-    /// 
+    ///
     /// This is similar to FastAPI's sub-applications. The sub-app will have its own
     /// `/docs` and `/openapi.json` endpoints available at `/<path>/docs` and `/<path>/openapi.json`.
-    /// 
+    ///
     /// Note: The sub-app's routes will NOT be included in the main app's OpenAPI spec.
     /// The sub-app's deps will be merged into the main app's dependency injection container.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// use ultraapi::prelude::*;
-    /// 
+    ///
     /// // Create a sub-app
     /// let sub_app = UltraApiApp::new()
     ///     .title("Sub API")
     ///     .version("1.0.0");
-    /// 
+    ///
     /// // Mount it at /api
     /// let app = UltraApiApp::new()
     ///     .mount("/api", sub_app);
@@ -2748,12 +2803,12 @@ impl UltraApiApp {
     }
 
     /// Serve static files from a directory.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// use ultraapi::prelude::*;
-    /// 
+    ///
     /// let app = UltraApiApp::new()
     ///     .static_files("/static", "./static");
     /// ```
@@ -2763,17 +2818,17 @@ impl UltraApiApp {
     }
 
     /// Set the templates directory for rendering HTML templates.
-    /// 
+    ///
     /// The templates will be registered as a dependency that can be injected via `Dep<Templates>`.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// use ultraapi::prelude::*;
-    /// 
+    ///
     /// let app = UltraApiApp::new()
     ///     .templates_dir("./templates");
-    /// 
+    ///
     /// // In a handler
     /// #[get("/hello")]
     /// async fn hello(templates: Dep<Templates>) -> impl IntoResponse {
@@ -2850,7 +2905,8 @@ impl UltraApiApp {
     ///     .gzip();  // Enable gzip + brotli compression
     /// ```
     pub fn gzip(mut self) -> Self {
-        self.middleware.compression(middleware::CompressionConfig::new());
+        self.middleware
+            .compression(middleware::CompressionConfig::new());
         self
     }
 
@@ -2868,6 +2924,44 @@ impl UltraApiApp {
     /// ```
     pub fn gzip_config(mut self, config: middleware::GZipConfig) -> Self {
         self.middleware = self.middleware.gzip_config(config);
+        self
+    }
+
+    /// Enable response caching with custom configuration.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    /// use ultraapi::middleware::ResponseCacheConfig;
+    /// use std::time::Duration;
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .title("My API")
+    ///     .response_cache(
+    ///         ResponseCacheConfig::new()
+    ///             .ttl(Duration::from_secs(60))
+    ///     );
+    /// ```
+    pub fn response_cache(mut self, config: middleware::ResponseCacheConfig) -> Self {
+        self.middleware = self.middleware.response_cache(config);
+        self
+    }
+
+    /// Enable server-side session cookies.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use ultraapi::prelude::*;
+    /// use ultraapi::session::SessionConfig;
+    ///
+    /// let app = UltraApiApp::new()
+    ///     .title("My API")
+    ///     .session_cookies(SessionConfig::new("dev-secret"));
+    /// ```
+    pub fn session_cookies(mut self, config: crate::session::SessionConfig) -> Self {
+        self.middleware = self.middleware.session_cookies(config);
         self
     }
 
@@ -2956,22 +3050,22 @@ impl UltraApiApp {
         resolved
     }
 
-pub fn into_router(self) -> Router {
+    pub fn into_router(self) -> Router {
         let (router, _runner) = self.into_router_with_lifespan();
         router
     }
 
     /// Convert the application into a Router with integrated lifespan management
-    /// 
+    ///
     /// This method returns both the Router and a LifespanRunner that manages startup/shutdown hooks.
     /// The Router will automatically run startup hooks on the first request (lazy startup).
     /// The LifespanRunner can be used to trigger shutdown hooks when the application is done.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// use ultraapi::prelude::*;
-    /// 
+    ///
     /// let app = UltraApiApp::new()
     ///     .on_startup(|_state| {
     ///         Box::pin(async {
@@ -2983,11 +3077,11 @@ pub fn into_router(self) -> Router {
     ///             println!("Shutting down!");
     ///         })
     ///     });
-    /// 
+    ///
     /// let (router, runner) = app.into_router_with_lifespan();
-    /// 
+    ///
     /// // Use router for testing or serving...
-    /// 
+    ///
     /// // When done, trigger shutdown:
     /// runner.shutdown().await;
     /// ```
@@ -3142,20 +3236,21 @@ pub fn into_router(self) -> Router {
         for (path, mut sub_app) in mounted_apps {
             // Get sub-app's resolved routes
             let sub_resolved = sub_app.resolve_routes();
-            
+
             // Add routes with path prefix
             for r in sub_resolved {
                 let full_path = format!("{}{}", path, r.full_axum_path());
                 let method_router = (r.route_info.method_router_fn)();
                 app = app.route(&full_path, method_router);
             }
-            
+
             // Generate sub-app's OpenAPI spec and swagger HTML
             let sub_spec = sub_app.generate_openapi_spec();
             let sub_swagger = sub_app.generate_swagger_html();
-            let sub_spec_json = serde_json::to_string_pretty(&sub_spec.to_json_with_query_params(&sub_app.routers))
-                .unwrap_or_else(|_| "{}".to_string());
-            
+            let sub_spec_json =
+                serde_json::to_string_pretty(&sub_spec.to_json_with_query_params(&sub_app.routers))
+                    .unwrap_or_else(|_| "{}".to_string());
+
             let _sub_path_prefix = path.to_string();
             let sub_spec_json_clone = sub_spec_json.clone();
             app = app.route(
@@ -3165,7 +3260,7 @@ pub fn into_router(self) -> Router {
                     async move { (StatusCode::OK, [("content-type", "application/json")], spec) }
                 }),
             );
-            
+
             let sub_swagger_clone = sub_swagger.clone();
             app = app.route(
                 &format!("{}/docs", path),
@@ -3174,7 +3269,7 @@ pub fn into_router(self) -> Router {
                     async move { (StatusCode::OK, [("content-type", "text/html")], html) }
                 }),
             );
-            
+
             // Add sub-app's ReDoc endpoint
             let sub_redoc = sub_app.generate_redoc_html(&format!("{}/openapi.json", path));
             let sub_redoc_clone = sub_redoc.clone();
@@ -3185,13 +3280,24 @@ pub fn into_router(self) -> Router {
                     async move { (StatusCode::OK, [("content-type", "text/html")], html) }
                 }),
             );
-            
+
             // Add sub-app's static files with path prefix
             for (sub_path, dir) in sub_app.static_files.drain(..) {
                 let full_path = format!("{}{}", path, sub_path);
                 let static_service = tower_http::services::ServeDir::new(dir);
                 app = app.nest_service(&full_path, static_service);
             }
+        }
+
+        // Apply session cookies if configured
+        if let Some(ref session_config) = self.middleware.session_config {
+            app = app.layer(crate::session::SessionLayer::new(session_config.clone()));
+        }
+
+        // Apply response cache if configured (should run *before* compression so that
+        // the cached body can still be compressed per-request based on Accept-Encoding).
+        if let Some(ref cache_config) = self.middleware.response_cache_config {
+            app = app.layer(cache_config.clone().build());
         }
 
         // Apply compression if configured (after all routes are added)
@@ -3252,7 +3358,9 @@ pub fn into_router(self) -> Router {
 
         // Apply response background tasks middleware
         // This executes tasks added via BackgroundTasks dependency after response is sent
-        app = app.layer(axum::middleware::from_fn(response_tasks::response_task_middleware));
+        app = app.layer(axum::middleware::from_fn(
+            response_tasks::response_task_middleware,
+        ));
 
         // Create lifespan runner
         let lifecycle = self.lifecycle.clone();
@@ -3265,7 +3373,7 @@ pub fn into_router(self) -> Router {
         (app, lifespan_runner)
     }
 
-pub async fn serve(self, addr: &str) {
+    pub async fn serve(self, addr: &str) {
         // Build router + lifespan runner so that state and hooks are consistent
         // across serve/TestClient/embedded usage.
         let (app, runner) = self.into_router_with_lifespan();
@@ -3353,7 +3461,10 @@ pub async fn serve(self, addr: &str) {
         });
 
         openapi::Operation {
-            summary: route.summary.map(|s| s.to_string()).or_else(|| Some(route.handler_name.replace('_', " "))),
+            summary: route
+                .summary
+                .map(|s| s.to_string())
+                .or_else(|| Some(route.handler_name.replace('_', " "))),
             description,
             operation_id: Some(route.handler_name.to_string()),
             tags,
@@ -3559,14 +3670,17 @@ pub async fn serve(self, addr: &str) {
             if let Some(path_item) = paths.get_mut(&owner_path) {
                 if let Some(operation) = path_item.get_mut(&owner_method) {
                     // Build the callback operation
-                    let callback_tags: Vec<String> = callback_route.tags.iter().map(|s| s.to_string()).collect();
+                    let callback_tags: Vec<String> =
+                        callback_route.tags.iter().map(|s| s.to_string()).collect();
                     let callback_sec: Vec<&str> = callback_route.security.to_vec();
-                    let callback_operation = Self::build_operation(callback_route, callback_tags, &callback_sec);
-                    
+                    let callback_operation =
+                        Self::build_operation(callback_route, callback_tags, &callback_sec);
+
                     // Create the callback PathItem
                     let mut callback_path_item = openapi::PathItem::new();
-                    callback_path_item.insert(callback_route.method.to_lowercase(), callback_operation);
-                    
+                    callback_path_item
+                        .insert(callback_route.method.to_lowercase(), callback_operation);
+
                     // Add to operation's callbacks
                     let mut callback = openapi::Callback::new();
                     callback.insert(expression.clone(), callback_path_item);
@@ -3595,18 +3709,23 @@ pub async fn serve(self, addr: &str) {
             if let Some(path_item) = paths.get_mut(&owner_path) {
                 if let Some(operation) = path_item.get_mut(&owner_method) {
                     // Build the callback operation
-                    let callback_tags: Vec<String> = callback_route.tags.iter().map(|s| s.to_string()).collect();
+                    let callback_tags: Vec<String> =
+                        callback_route.tags.iter().map(|s| s.to_string()).collect();
                     let callback_sec: Vec<&str> = callback_route.security.to_vec();
-                    let callback_operation = Self::build_operation(callback_route, callback_tags, &callback_sec);
-                    
+                    let callback_operation =
+                        Self::build_operation(callback_route, callback_tags, &callback_sec);
+
                     // Create the callback PathItem
                     let mut callback_path_item = openapi::PathItem::new();
-                    callback_path_item.insert(callback_route.method.to_lowercase(), callback_operation);
-                    
+                    callback_path_item
+                        .insert(callback_route.method.to_lowercase(), callback_operation);
+
                     // Add to operation's callbacks
                     let mut callback = openapi::Callback::new();
                     callback.insert(expression.to_string(), callback_path_item);
-                    operation.callbacks.insert(callback_name.to_string(), callback);
+                    operation
+                        .callbacks
+                        .insert(callback_name.to_string(), callback);
                 }
             }
         }

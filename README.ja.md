@@ -1161,6 +1161,30 @@ let app = UltraApiApp::new()
 - 小さいレスポンス（デフォルト閾値以下）は圧縮されない場合があります
 - `Accept-Encoding: identity` の場合は圧縮されません
 
+## セッション（Session Cookies / サーバーサイドセッション）
+
+UltraAPI は Cookie + サーバー側 in-memory store による **サーバーサイドセッション** を提供します。
+
+- Cookie には `session_id` のみを保存します
+- セッションデータはサーバー側に保存されます
+- TTL による期限切れをサポートします
+
+```rust
+use ultraapi::prelude::*;
+use std::time::Duration;
+
+#[get("/login")]
+async fn login(session: Session) -> String {
+    session.insert("user_id", 123_i64).unwrap();
+    "ok".to_string()
+}
+
+let app = UltraApiApp::new()
+    .title("My API")
+    .version("1.0.0")
+    .session_cookies(SessionConfig::new("dev-secret").ttl(Duration::from_secs(3600)));
+```
+
 ## テストクライアント（TestClient）
 
 UltraAPI には、FastAPI ライクな `TestClient` が組み込まれています。サーバーを手動で起動せずに HTTP リクエストをテストできます。
@@ -1211,14 +1235,42 @@ async fn test_get_user() {
 ### UltraApiApp または Router から作成
 
 ```rust
-// UltraApiApp から
+// UltraApiApp から（TCP で起動する通常版）
 let app = UltraApiApp::new().title("My API");
 let client = TestClient::new(app).await;
 
-// Router から
+// Router から（TCP で起動する通常版）
 let router = UltraApiApp::new().into_router();
 let client = TestClient::new_router(router).await;
 ```
+
+### in-process（推奨：高速）
+
+ネットワークの bind をせず、`axum::Router`（tower::Service）を **直接呼び出す** テストクライアントも提供しています。
+
+```rust
+use ultraapi::prelude::*;
+
+#[get("/hello")]
+async fn hello() -> String {
+    "Hello".to_string()
+}
+
+#[tokio::test]
+async fn test_hello_in_process() {
+    let app = UltraApiApp::new().include(
+        UltraApiRouter::new("").route(__ULTRAAPI_ROUTE_HELLO)
+    );
+
+    let client = TestClient::new_in_process(app).await;
+
+    let resp = client.get("/hello").await;
+    assert_eq!(resp.status(), 200);
+}
+```
+
+- 戻り値は in-process 用の `TestResponse`（`status()` / `headers()` / `bytes()` / `text()` / `json()`）です
+- in-process 版は TCP 起動がないため、テストが大幅に速くなります
 
 ## 実装済み機能一覧
 
@@ -1250,6 +1302,7 @@ let client = TestClient::new_router(router).await;
 - ✅ カスタム例外によるグローバルエラーハンドリング
 - ✅ パニックキャッチ
 - ✅ レスポンス圧縮（GZip/Brotli）
+- ✅ レスポンスキャッシュ（TTL / x-cache / Authorization はバイパス）
 - ✅ ストリーミングデータ用 StreamingResponse
 - ✅ Cookie 設定用 CookieResponse
 

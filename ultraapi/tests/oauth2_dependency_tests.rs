@@ -36,11 +36,14 @@ async fn test_oauth2_password_bearer_valid_token() {
     // With valid Bearer token
     let resp = client
         .get(format!("http://{}/oauth2-password-protected", addr))
-        .header("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test")
+        .header(
+            "Authorization",
+            "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test",
+        )
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("Token:"));
@@ -68,7 +71,7 @@ async fn test_oauth2_password_bearer_missing_header() {
     let resp = reqwest::get(format!("http://{}/oauth2-password-protected", addr))
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 401);
 }
 
@@ -99,7 +102,7 @@ async fn test_oauth2_password_bearer_invalid_format() {
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 401);
 }
 
@@ -143,7 +146,7 @@ async fn test_optional_oauth2_password_bearer_valid_token() {
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("Token: valid-token-123"));
@@ -171,7 +174,7 @@ async fn test_optional_oauth2_password_bearer_missing_header() {
     let resp = reqwest::get(format!("http://{}/optional-oauth2-protected", addr))
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("No token provided"));
@@ -204,7 +207,7 @@ async fn test_optional_oauth2_password_bearer_invalid_format() {
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("No token provided"));
@@ -248,7 +251,7 @@ async fn test_oauth2_auth_code_bearer_valid_token() {
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("Auth Code Token:"));
@@ -277,7 +280,7 @@ async fn test_oauth2_auth_code_bearer_missing_header() {
     let resp = reqwest::get(format!("http://{}/oauth2-auth-code-protected", addr))
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 401);
 }
 
@@ -287,7 +290,9 @@ async fn test_oauth2_auth_code_bearer_missing_header() {
 
 #[get("/optional-oauth2-auth-code-protected")]
 #[security("oauth2AuthCode")]
-async fn optional_oauth2_auth_code_protected(token: OptionalOAuth2AuthorizationCodeBearer) -> String {
+async fn optional_oauth2_auth_code_protected(
+    token: OptionalOAuth2AuthorizationCodeBearer,
+) -> String {
     match token.0 {
         Some(t) => format!("Auth Code Token: {}", t),
         None => "No auth code token provided".to_string(),
@@ -314,10 +319,13 @@ async fn test_optional_oauth2_auth_code_bearer_missing_header() {
     });
 
     // Without Authorization header - should return 200
-    let resp = reqwest::get(format!("http://{}/optional-oauth2-auth-code-protected", addr))
-        .await
-        .unwrap();
-    
+    let resp = reqwest::get(format!(
+        "http://{}/optional-oauth2-auth-code-protected",
+        addr
+    ))
+    .await
+    .unwrap();
+
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("No auth code token provided"));
@@ -410,7 +418,7 @@ async fn test_oauth2_auth_code_in_openapi_spec() {
 #[tokio::test]
 async fn test_oauth2_error_response_format() {
     use ultraapi::middleware::OAuth2PasswordBearer;
-    
+
     // Test that error response contains the expected format
     // The error should be in ApiError format
     let app = UltraApiApp::new()
@@ -433,9 +441,9 @@ async fn test_oauth2_error_response_format() {
     let resp = reqwest::get(format!("http://{}/oauth2-password-protected", addr))
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 401);
-    
+
     // Check error response format (should be JSON)
     let body: serde_json::Value = resp.json().await.unwrap();
     // ApiError typically has "error" or similar field
@@ -449,7 +457,7 @@ async fn test_oauth2_error_response_format() {
 #[test]
 fn test_parse_bearer_token_valid() {
     use ultraapi::middleware::parse_bearer_token;
-    
+
     let token = parse_bearer_token("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
     assert!(token.is_some());
     assert_eq!(token.unwrap(), "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
@@ -458,7 +466,7 @@ fn test_parse_bearer_token_valid() {
 #[test]
 fn test_parse_bearer_token_lowercase() {
     use ultraapi::middleware::parse_bearer_token;
-    
+
     // Should be case-insensitive
     let token = parse_bearer_token("bearer my-token-123");
     assert!(token.is_some());
@@ -468,7 +476,7 @@ fn test_parse_bearer_token_lowercase() {
 #[test]
 fn test_parse_bearer_token_invalid_scheme() {
     use ultraapi::middleware::parse_bearer_token;
-    
+
     // Not Bearer scheme
     let token = parse_bearer_token("Basic dXNlcjpwYXNz");
     assert!(token.is_none());
@@ -477,7 +485,7 @@ fn test_parse_bearer_token_invalid_scheme() {
 #[test]
 fn test_parse_bearer_token_empty_token() {
     use ultraapi::middleware::parse_bearer_token;
-    
+
     // Empty token after Bearer
     let token = parse_bearer_token("Bearer ");
     assert!(token.is_none());
@@ -486,7 +494,7 @@ fn test_parse_bearer_token_empty_token() {
 #[test]
 fn test_parse_bearer_token_no_scheme() {
     use ultraapi::middleware::parse_bearer_token;
-    
+
     // No Bearer scheme
     let token = parse_bearer_token("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
     assert!(token.is_none());
@@ -495,7 +503,7 @@ fn test_parse_bearer_token_no_scheme() {
 #[test]
 fn test_oauth2_scopes_new() {
     use ultraapi::middleware::OAuth2Scopes;
-    
+
     let scopes = OAuth2Scopes::new(vec!["read".to_string(), "write".to_string()]);
     assert_eq!(scopes.scopes.len(), 2);
     assert!(scopes.scopes.contains(&"read".to_string()));
@@ -505,7 +513,7 @@ fn test_oauth2_scopes_new() {
 #[test]
 fn test_oauth2_scopes_from_iter() {
     use ultraapi::middleware::OAuth2Scopes;
-    
+
     let scopes = OAuth2Scopes::from_iter(["read", "write"]);
     assert_eq!(scopes.scopes.len(), 2);
 }

@@ -571,7 +571,7 @@ fn test_external_docs_serialization() {
         description: Some("Find more info here".to_string()),
         url: "https://example.com/docs".to_string(),
     };
-    
+
     let json = serde_json::to_value(&external_docs).unwrap();
     assert_eq!(json["description"], "Find more info here");
     assert_eq!(json["url"], "https://example.com/docs");
@@ -583,7 +583,7 @@ fn test_external_docs_url_only() {
         description: None,
         url: "https://example.com/docs".to_string(),
     };
-    
+
     let json = serde_json::to_value(&external_docs).unwrap();
     assert!(json.get("description").is_none());
     assert_eq!(json["url"], "https://example.com/docs");
@@ -800,7 +800,7 @@ fn test_operation_with_external_docs() {
         description: Some("Full API docs".to_string()),
         url: "https://api.example.com/docs".to_string(),
     };
-    
+
     let operation = Operation {
         summary: Some("Test operation".to_string()),
         description: None,

@@ -46,10 +46,10 @@
 //! - 接続は閉じられ、空のレスポンスがクライアントに送信されます
 //! - 本番環境では、適切なロギングシステムを設定してください
 
+use crate::StreamingResponse;
 use bytes::Bytes;
 use futures_util::stream::TryStreamExt;
 use tokio::io::{AsyncRead, AsyncReadExt};
-use crate::StreamingResponse;
 
 /// AsyncRead からストリームを作成します
 ///
@@ -89,7 +89,10 @@ use crate::StreamingResponse;
 ///
 /// - `reader`: `tokio::io::AsyncRead` を実装するリーダー
 /// - `chunk_size`: 読み取りごとのバッファサイズ（デフォルトは 8KB）
-pub fn reader_stream<R>(reader: R, chunk_size: usize) -> impl tokio_stream::Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send
+pub fn reader_stream<R>(
+    reader: R,
+    chunk_size: usize,
+) -> impl tokio_stream::Stream<Item = Result<Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send
 where
     R: AsyncRead + Send + Unpin + 'static,
 {
@@ -118,7 +121,10 @@ where
 ///
 /// - `reader`: `tokio::io::AsyncRead` を実装するリーダー
 /// - `chunk_size`: 読み取りごとのバッファサイズ（デフォルトは 8KB）
-pub fn reader_stream_infallible<R>(reader: R, chunk_size: usize) -> impl tokio_stream::Stream<Item = Result<Bytes, std::convert::Infallible>> + Send
+pub fn reader_stream_infallible<R>(
+    reader: R,
+    chunk_size: usize,
+) -> impl tokio_stream::Stream<Item = Result<Bytes, std::convert::Infallible>> + Send
 where
     R: AsyncRead + Send + Unpin + 'static,
 {
@@ -202,10 +208,7 @@ impl StreamingResponse {
 ///         .content_type("text/plain")
 /// }
 /// ```
-pub fn bytes_stream(
-    chunks: Vec<Bytes>,
-) -> impl tokio_stream::Stream<Item = Bytes> + Send
-{
+pub fn bytes_stream(chunks: Vec<Bytes>) -> impl tokio_stream::Stream<Item = Bytes> + Send {
     tokio_stream::iter(chunks.into_iter())
 }
 
@@ -235,20 +238,14 @@ where
     F: Fn(T::Item) -> B + Send + Sync + 'static,
     B: Into<Bytes>,
 {
-    tokio_stream::iter(
-        iter.into_iter()
-            .map(move |item| f(item).into()),
-    )
+    tokio_stream::iter(iter.into_iter().map(move |item| f(item).into()))
 }
 
 /// 文字列のイテータからストリームを作成します
 ///
 /// 文字列のイテータから HTTP レスポンス用のストリームを作成します。
 /// 各文字列は改行で区切られます。
-pub fn string_stream(
-    strings: Vec<String>,
-) -> impl tokio_stream::Stream<Item = Bytes> + Send
-{
+pub fn string_stream(strings: Vec<String>) -> impl tokio_stream::Stream<Item = Bytes> + Send {
     iter_stream(strings, |s| Bytes::from(s))
 }
 
@@ -339,10 +336,10 @@ mod tests {
     async fn test_reader_stream_basic() {
         let data = b"Hello, World!".to_vec();
         let cursor = Cursor::new(data);
-        
+
         let stream = reader_stream(cursor, 8192);
         let collected: Vec<Result<Bytes, _>> = stream.collect().await;
-        
+
         // Should have one chunk with all data
         assert_eq!(collected.len(), 1);
         assert_eq!(collected[0].as_ref().unwrap().as_ref(), b"Hello, World!");
@@ -353,18 +350,18 @@ mod tests {
     async fn test_reader_stream_chunk_size() {
         let data = b"1234567890".to_vec();
         let cursor = Cursor::new(data);
-        
+
         // Use chunk_size of 3 to force multiple reads
         let stream = reader_stream(cursor, 3);
         let collected: Vec<Result<Bytes, _>> = stream.collect().await;
-        
+
         // Should have multiple chunks
         let combined: Vec<u8> = collected
             .into_iter()
             .map(|r| r.unwrap().to_vec())
             .flatten()
             .collect();
-        
+
         assert_eq!(combined, b"1234567890");
     }
 
@@ -373,10 +370,9 @@ mod tests {
     async fn test_from_reader_basic() {
         let data = b"Test data for reader".to_vec();
         let cursor = Cursor::new(data);
-        
-        let response = StreamingResponse::from_reader(cursor, 8192)
-            .content_type("text/plain");
-        
+
+        let response = StreamingResponse::from_reader(cursor, 8192).content_type("text/plain");
+
         // Just verify it compiles and can be converted
         let _ = response;
     }
@@ -389,10 +385,10 @@ mod tests {
             Bytes::from("chunk2"),
             Bytes::from("chunk3"),
         ];
-        
+
         let stream = bytes_stream(chunks);
         let collected: Vec<Bytes> = stream.collect().await;
-        
+
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0].as_ref(), b"chunk1");
         assert_eq!(collected[1].as_ref(), b"chunk2");
@@ -407,10 +403,10 @@ mod tests {
             "line2".to_string(),
             "line3".to_string(),
         ];
-        
+
         let stream = string_stream(strings);
         let collected: Vec<Bytes> = stream.collect().await;
-        
+
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0].as_ref(), b"line1");
         assert_eq!(collected[1].as_ref(), b"line2");
@@ -421,10 +417,10 @@ mod tests {
     #[tokio::test]
     async fn test_iter_stream() {
         let numbers = vec![1, 2, 3];
-        
+
         let stream = iter_stream(numbers, |n| Bytes::from(format!("num:{}", n)));
         let collected: Vec<Bytes> = stream.collect().await;
-        
+
         assert_eq!(collected.len(), 3);
         assert_eq!(collected[0].as_ref(), b"num:1");
         assert_eq!(collected[1].as_ref(), b"num:2");

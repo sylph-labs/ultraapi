@@ -18,9 +18,7 @@ async fn spawn_app() -> String {
 }
 
 async fn spawn_app_with_mounted() -> String {
-    let sub_app = UltraApiApp::new()
-        .title("Sub API")
-        .version("0.1.0");
+    let sub_app = UltraApiApp::new().title("Sub API").version("0.1.0");
 
     let app = UltraApiApp::new()
         .title("Main API")

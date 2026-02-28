@@ -781,9 +781,7 @@ async fn test_api_key_in_query_success() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["valid-key".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_query("apiKeyAuth", "api_key")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_query("apiKeyAuth", "api_key"))
         })
         .into_router();
 
@@ -819,9 +817,7 @@ async fn test_api_key_in_query_failure() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["valid-key".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_query("apiKeyAuth", "api_key")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_query("apiKeyAuth", "api_key"))
         })
         .into_router();
 
@@ -871,9 +867,10 @@ async fn test_api_key_in_cookie_success() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["valid-key".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_cookie("apiKeyAuth", "api_key")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_cookie(
+                    "apiKeyAuth",
+                    "api_key",
+                ))
         })
         .into_router();
 
@@ -913,9 +910,10 @@ async fn test_api_key_in_cookie_failure() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["valid-key".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_cookie("apiKeyAuth", "api_key")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_cookie(
+                    "apiKeyAuth",
+                    "api_key",
+                ))
         })
         .into_router();
 
@@ -969,9 +967,10 @@ async fn test_api_key_in_custom_header_success() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["my-secret-key".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_header("apiKeyAuth", "X-API-Key")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_header(
+                    "apiKeyAuth",
+                    "X-API-Key",
+                ))
         })
         .into_router();
 
@@ -1011,9 +1010,10 @@ async fn test_api_key_in_custom_header_failure() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["my-secret-key".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_header("apiKeyAuth", "X-API-Key")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_header(
+                    "apiKeyAuth",
+                    "X-API-Key",
+                ))
         })
         .into_router();
 
@@ -1052,12 +1052,15 @@ async fn scope_read_route() -> String {
 
 #[tokio::test]
 async fn test_scope_validation_success() {
-    use ultraapi::middleware::{SecuritySchemeConfig, ScopedAuthValidator, MockAuthValidator};
+    use ultraapi::middleware::{MockAuthValidator, ScopedAuthValidator, SecuritySchemeConfig};
 
     let validator = ScopedAuthValidator::new(MockAuthValidator::new())
         .with_scope("valid-read", vec!["read".to_string()])
         .with_scope("valid-write", vec!["read".to_string(), "write".to_string()])
-        .with_scope("admin-token", vec!["read".to_string(), "write".to_string(), "admin".to_string()]);
+        .with_scope(
+            "admin-token",
+            vec!["read".to_string(), "write".to_string(), "admin".to_string()],
+        );
 
     let app = UltraApiApp::new()
         .title("Scope Test")
@@ -1068,7 +1071,7 @@ async fn test_scope_validation_success() {
                 .enable_auth_with_validator(validator)
                 .with_security_scheme(
                     SecuritySchemeConfig::bearer("bearerAuth")
-                        .with_scopes(vec!["read".to_string()])
+                        .with_scopes(vec!["read".to_string()]),
                 )
         })
         .into_router();
@@ -1095,7 +1098,7 @@ async fn test_scope_validation_success() {
 
 #[tokio::test]
 async fn test_scope_validation_failure() {
-    use ultraapi::middleware::{SecuritySchemeConfig, ScopedAuthValidator, MockAuthValidator};
+    use ultraapi::middleware::{MockAuthValidator, ScopedAuthValidator, SecuritySchemeConfig};
 
     // Validator that only grants 'write' scope to 'valid-write' token
     let validator = ScopedAuthValidator::new(MockAuthValidator::new())
@@ -1110,7 +1113,7 @@ async fn test_scope_validation_failure() {
                 .enable_auth_with_validator(validator)
                 .with_security_scheme(
                     SecuritySchemeConfig::bearer("bearerAuth")
-                        .with_scopes(vec!["read".to_string()])  // Requires read scope
+                        .with_scopes(vec!["read".to_string()]), // Requires read scope
                 )
         })
         .into_router();
@@ -1287,9 +1290,7 @@ async fn test_openapi_query_api_key_scheme() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["test-key".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_query("apiKeyAuth", "api_key")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_query("apiKeyAuth", "api_key"))
         })
         .into_router();
 
@@ -1333,9 +1334,10 @@ async fn test_openapi_cookie_api_key_scheme() {
         .middleware(|builder| {
             builder
                 .enable_auth_with_api_keys(vec!["test-session".to_string()])
-                .with_security_scheme(
-                    SecuritySchemeConfig::api_key_cookie("apiKeyAuth", "session")
-                )
+                .with_security_scheme(SecuritySchemeConfig::api_key_cookie(
+                    "apiKeyAuth",
+                    "session",
+                ))
         })
         .into_router();
 

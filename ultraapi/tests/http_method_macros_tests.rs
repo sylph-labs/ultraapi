@@ -1,5 +1,5 @@
-use ultraapi::prelude::*;
 use std::collections::HashMap;
+use ultraapi::prelude::*;
 
 #[api_model]
 #[derive(Debug, Clone)]
@@ -18,20 +18,28 @@ struct UpdateUser {
 
 #[patch("/users/{id}")]
 async fn patch_user(id: i64, body: UpdateUser) -> User {
-    User { id, name: body.name }
+    User {
+        id,
+        name: body.name,
+    }
 }
 
 #[tokio::test]
 async fn test_patch_macro_returns_200() {
     let app = UltraApiApp::new();
     let client = TestClient::new(app).await;
-    
+
     let response = client
-        .patch("/users/1", &UpdateUser { name: "Updated".to_string() })
+        .patch(
+            "/users/1",
+            &UpdateUser {
+                name: "Updated".to_string(),
+            },
+        )
         .await;
-    
+
     assert_eq!(response.status(), 200);
-    
+
     let user: User = response.json().await.unwrap();
     assert_eq!(user.id, 1);
     assert_eq!(user.name, "Updated");
@@ -40,13 +48,11 @@ async fn test_patch_macro_returns_200() {
 #[test]
 fn test_patch_macro_in_openapi() {
     // Get the OpenAPI spec by building an app and accessing its spec
-    let app = UltraApiApp::new()
-        .title("Test API")
-        .version("1.0.0");
-    
+    let app = UltraApiApp::new().title("Test API").version("1.0.0");
+
     // Build the router which generates the spec
     let _router = app.into_router();
-    
+
     // Access the spec from inventory
     let mut paths = HashMap::new();
     for route in ultraapi::inventory::iter::<&ultraapi::RouteInfo> {
@@ -55,7 +61,7 @@ fn test_patch_macro_in_openapi() {
         }
         paths.insert(route.path.to_string(), route.method.to_string());
     }
-    
+
     assert_eq!(paths.get("/users/{id}"), Some(&"PATCH".to_string()));
 }
 
@@ -70,20 +76,18 @@ async fn head_test() -> String {
 async fn test_head_macro_returns_200() {
     let app = UltraApiApp::new();
     let client = TestClient::new(app).await;
-    
+
     let response = client.head("/head-test").await;
-    
+
     assert_eq!(response.status(), 200);
 }
 
 #[test]
 fn test_head_macro_in_openapi() {
-    let app = UltraApiApp::new()
-        .title("Test API")
-        .version("1.0.0");
-    
+    let app = UltraApiApp::new().title("Test API").version("1.0.0");
+
     let _router = app.into_router();
-    
+
     let mut paths = HashMap::new();
     for route in ultraapi::inventory::iter::<&ultraapi::RouteInfo> {
         if route.path == "/head-test" {
@@ -91,7 +95,7 @@ fn test_head_macro_in_openapi() {
         }
         paths.insert(route.path.to_string(), route.method.to_string());
     }
-    
+
     assert_eq!(paths.get("/head-test"), Some(&"HEAD".to_string()));
 }
 
@@ -106,20 +110,18 @@ async fn options_test() -> String {
 async fn test_options_macro_returns_200() {
     let app = UltraApiApp::new();
     let client = TestClient::new(app).await;
-    
+
     let response = client.options("/options-test").await;
-    
+
     assert_eq!(response.status(), 200);
 }
 
 #[test]
 fn test_options_macro_in_openapi() {
-    let app = UltraApiApp::new()
-        .title("Test API")
-        .version("1.0.0");
-    
+    let app = UltraApiApp::new().title("Test API").version("1.0.0");
+
     let _router = app.into_router();
-    
+
     let mut paths = HashMap::new();
     for route in ultraapi::inventory::iter::<&ultraapi::RouteInfo> {
         if route.path == "/options-test" {
@@ -127,7 +129,7 @@ fn test_options_macro_in_openapi() {
         }
         paths.insert(route.path.to_string(), route.method.to_string());
     }
-    
+
     assert_eq!(paths.get("/options-test"), Some(&"OPTIONS".to_string()));
 }
 
@@ -142,20 +144,18 @@ async fn trace_test() -> String {
 async fn test_trace_macro_returns_200() {
     let app = UltraApiApp::new();
     let client = TestClient::new(app).await;
-    
+
     let response = client.trace("/trace-test").await;
-    
+
     assert_eq!(response.status(), 200);
 }
 
 #[test]
 fn test_trace_macro_in_openapi() {
-    let app = UltraApiApp::new()
-        .title("Test API")
-        .version("1.0.0");
-    
+    let app = UltraApiApp::new().title("Test API").version("1.0.0");
+
     let _router = app.into_router();
-    
+
     let mut paths = HashMap::new();
     for route in ultraapi::inventory::iter::<&ultraapi::RouteInfo> {
         if route.path == "/trace-test" {
@@ -163,7 +163,7 @@ fn test_trace_macro_in_openapi() {
         }
         paths.insert(route.path.to_string(), route.method.to_string());
     }
-    
+
     assert_eq!(paths.get("/trace-test"), Some(&"TRACE".to_string()));
 }
 
@@ -171,7 +171,10 @@ fn test_trace_macro_in_openapi() {
 
 #[get("/all-methods/get")]
 async fn all_methods_get() -> User {
-    User { id: 1, name: "get".to_string() }
+    User {
+        id: 1,
+        name: "get".to_string(),
+    }
 }
 
 #[post("/all-methods/post")]
@@ -189,7 +192,10 @@ async fn all_methods_delete() {}
 
 #[patch("/all-methods/patch")]
 async fn all_methods_patch(body: UpdateUser) -> User {
-    User { id: 1, name: body.name }
+    User {
+        id: 1,
+        name: body.name,
+    }
 }
 
 #[head("/all-methods/head")]
@@ -211,41 +217,58 @@ async fn all_methods_trace() -> String {
 async fn test_all_http_methods_runtime() {
     let app = UltraApiApp::new();
     let client = TestClient::new(app).await;
-    
+
     // Test GET
     let response = client.get("/all-methods/get").await;
     assert_eq!(response.status(), 200);
-    
+
     // Test POST
     let response = client
-        .post("/all-methods/post", &User { id: 1, name: "test".to_string() })
+        .post(
+            "/all-methods/post",
+            &User {
+                id: 1,
+                name: "test".to_string(),
+            },
+        )
         .await;
     assert_eq!(response.status(), 201);
-    
+
     // Test PUT
     let response = client
-        .put("/all-methods/put", &User { id: 1, name: "test".to_string() })
+        .put(
+            "/all-methods/put",
+            &User {
+                id: 1,
+                name: "test".to_string(),
+            },
+        )
         .await;
     assert_eq!(response.status(), 200);
-    
+
     // Test DELETE
     let response = client.delete("/all-methods/delete").await;
     assert_eq!(response.status(), 204);
-    
+
     // Test PATCH
     let response = client
-        .patch("/all-methods/patch", &UpdateUser { name: "test".to_string() })
+        .patch(
+            "/all-methods/patch",
+            &UpdateUser {
+                name: "test".to_string(),
+            },
+        )
         .await;
     assert_eq!(response.status(), 200);
-    
+
     // Test HEAD
     let response = client.head("/all-methods/head").await;
     assert_eq!(response.status(), 200);
-    
+
     // Test OPTIONS
     let response = client.options("/all-methods/options").await;
     assert_eq!(response.status(), 200);
-    
+
     // Test TRACE
     let response = client.trace("/all-methods/trace").await;
     assert_eq!(response.status(), 200);
@@ -253,12 +276,10 @@ async fn test_all_http_methods_runtime() {
 
 #[test]
 fn test_all_eight_http_methods_in_route_info() {
-    let app = UltraApiApp::new()
-        .title("Test API")
-        .version("1.0.0");
-    
+    let app = UltraApiApp::new().title("Test API").version("1.0.0");
+
     let _router = app.into_router();
-    
+
     // Collect all methods from route info
     let mut methods: Vec<&str> = Vec::new();
     for route in ultraapi::inventory::iter::<&ultraapi::RouteInfo> {
@@ -266,11 +287,11 @@ fn test_all_eight_http_methods_in_route_info() {
             methods.push(route.method);
         }
     }
-    
+
     // Sort and deduplicate
     methods.sort();
     methods.dedup();
-    
+
     // Should have all 8 HTTP methods
     assert!(methods.contains(&"GET"), "Should contain GET");
     assert!(methods.contains(&"POST"), "Should contain POST");
@@ -280,6 +301,6 @@ fn test_all_eight_http_methods_in_route_info() {
     assert!(methods.contains(&"HEAD"), "Should contain HEAD");
     assert!(methods.contains(&"OPTIONS"), "Should contain OPTIONS");
     assert!(methods.contains(&"TRACE"), "Should contain TRACE");
-    
+
     assert_eq!(methods.len(), 8, "Should have exactly 8 methods");
 }

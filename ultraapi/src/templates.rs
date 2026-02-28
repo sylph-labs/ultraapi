@@ -1,5 +1,5 @@
 //! Template rendering support using minijinja
-//! 
+//!
 //! This module provides template rendering functionality similar to FastAPI's template support.
 
 use axum::{
@@ -11,13 +11,13 @@ use serde::Serialize;
 use std::path::Path;
 
 /// Templates struct for rendering Jinja2 templates
-/// 
+///
 /// # Example
-/// 
+///
 /// ```ignore
 /// use ultraapi::templates::Templates;
 /// use std::path::PathBuf;
-/// 
+///
 /// let templates = Templates::new("./templates").unwrap();
 /// let html = templates.render("hello.html", serde_json::json!({ "name": "World" })).unwrap();
 /// ```
@@ -27,49 +27,55 @@ pub struct Templates {
 
 impl Templates {
     /// Create a new Templates instance from a directory path
-    /// 
+    ///
     /// The directory should contain Jinja2 template files.
     pub fn new(dir: impl AsRef<Path>) -> Result<Self, TemplatesError> {
         let mut env = Environment::new();
         env.set_loader(minijinja::path_loader(dir));
-        
+
         // Set some common filters
         // (minijinja has built-in filters like `upper`, `lower`, etc.)
-        
+
         Ok(Self { env })
     }
-    
+
     /// Render a template with the given context
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// let html = templates.render("hello.html", serde_json::json!({ "name": "World" })).unwrap();
     /// ```
     pub fn render(&self, name: &str, context: impl Serialize) -> Result<String, TemplatesError> {
         let template = self.env.get_template(name)?;
         // minijinja expects a serde_json::Value for context
-        let context = serde_json::to_value(context)
-            .map_err(|e| TemplatesError::RenderError(format!("Failed to serialize context: {}", e)))?;
-        template.render(context)
+        let context = serde_json::to_value(context).map_err(|e| {
+            TemplatesError::RenderError(format!("Failed to serialize context: {}", e))
+        })?;
+        template
+            .render(context)
             .map_err(|e| TemplatesError::RenderError(format!("Template render error: {}", e)))
     }
-    
+
     /// Get a TemplateResponse for the given template and context
-    /// 
+    ///
     /// This is a convenient method that returns a response with `text/html` content-type.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```ignore
     /// use ultraapi::templates::TemplateResponse;
-    /// 
+    ///
     /// // In a handler
     /// async fn hello() -> TemplateResponse {
     ///     TemplateResponse::new("hello.html", serde_json::json!({ "name": "World" }))
     /// }
     /// ```
-    pub fn template_response(&self, name: &str, context: impl Serialize) -> Result<TemplateResponse, TemplatesError> {
+    pub fn template_response(
+        &self,
+        name: &str,
+        context: impl Serialize,
+    ) -> Result<TemplateResponse, TemplatesError> {
         let html = self.render(name, context)?;
         Ok(TemplateResponse(html))
     }
@@ -102,7 +108,7 @@ impl From<minijinja::Error> for TemplatesError {
 }
 
 /// HTML response from template rendering
-/// 
+///
 /// This type implements `IntoResponse` and automatically sets the content-type to `text/html`.
 pub struct TemplateResponse(String);
 
@@ -120,12 +126,12 @@ impl IntoResponse for TemplateResponse {
 }
 
 /// Helper to create a TemplateResponse from a Templates instance
-/// 
+///
 /// # Example
-/// 
+///
 /// ```ignore
 /// use ultraapi::templates::{Templates, template_response};
-/// 
+///
 /// fn handler(dep: Dep<Templates>) -> impl IntoResponse {
 ///     template_response(&dep, "hello.html", serde_json::json!({ "name": "World" }))
 /// }

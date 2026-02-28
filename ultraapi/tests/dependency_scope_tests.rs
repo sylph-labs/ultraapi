@@ -2,7 +2,7 @@
 //
 // These tests verify:
 // 1. Function-scope cleanup timing
-// 2. Request-scope cleanup timing  
+// 2. Request-scope cleanup timing
 // 3. Generator trait registration works
 // 4. Backward compatibility with regular .depends()
 
@@ -36,7 +36,9 @@ impl Generator for TestResource {
 
 #[test]
 fn test_yield_depends_creates_resolver() {
-    let resource = TestResource { value: "test".to_string() };
+    let resource = TestResource {
+        value: "test".to_string(),
+    };
 
     let app = UltraApiApp::new()
         .title("Test API")
@@ -44,12 +46,17 @@ fn test_yield_depends_creates_resolver() {
         .yield_depends(resource, Scope::Function);
 
     // Should create the depends resolver automatically
-    assert!(app.get_depends_resolver().is_some(), "Resolver should be created");
+    assert!(
+        app.get_depends_resolver().is_some(),
+        "Resolver should be created"
+    );
 }
 
 #[test]
 fn test_yield_depends_can_check_is_generator() {
-    let resource = TestResource { value: "test".to_string() };
+    let resource = TestResource {
+        value: "test".to_string(),
+    };
 
     let app = UltraApiApp::new()
         .title("Test API")
@@ -57,13 +64,20 @@ fn test_yield_depends_can_check_is_generator() {
         .yield_depends(resource, Scope::Function);
 
     let resolver = app.get_depends_resolver().unwrap();
-    assert!(resolver.is_generator::<TestResource>(), "Should be registered as generator");
+    assert!(
+        resolver.is_generator::<TestResource>(),
+        "Should be registered as generator"
+    );
 }
 
 #[test]
 fn test_yield_depends_stores_correct_scope() {
-    let resource_fn = TestResource { value: "fn".to_string() };
-    let resource_req = TestResource { value: "req".to_string() };
+    let resource_fn = TestResource {
+        value: "fn".to_string(),
+    };
+    let resource_req = TestResource {
+        value: "req".to_string(),
+    };
 
     let app = UltraApiApp::new()
         .title("Test API")
@@ -72,15 +86,21 @@ fn test_yield_depends_stores_correct_scope() {
         .yield_depends(resource_req, Scope::Request);
 
     let resolver = app.get_depends_resolver().unwrap();
-    
+
     let fn_scope = resolver.get_generator_scope::<TestResource>();
     // Last registration wins, so it should be Request
-    assert_eq!(fn_scope, Some(Scope::Request), "Last registered scope should win");
+    assert_eq!(
+        fn_scope,
+        Some(Scope::Request),
+        "Last registered scope should win"
+    );
 }
 
 #[test]
 fn test_default_scope_is_function() {
-    let resource = TestResource { value: "test".to_string() };
+    let resource = TestResource {
+        value: "test".to_string(),
+    };
 
     let app = UltraApiApp::new()
         .title("Test API")
@@ -88,7 +108,10 @@ fn test_default_scope_is_function() {
         .yield_depends(resource, Scope::default());
 
     let resolver = app.get_depends_resolver().unwrap();
-    assert!(resolver.is_generator::<TestResource>(), "Should be registered");
+    assert!(
+        resolver.is_generator::<TestResource>(),
+        "Should be registered"
+    );
 }
 
 // =============================================================================
@@ -150,11 +173,17 @@ fn test_combined_yield_depends_and_depends() {
 
     // Both should work together
     assert!(app.get_depends_resolver().is_some());
-    
+
     let resolver = app.get_depends_resolver().unwrap();
-    assert!(resolver.is_generator::<YieldsResource>(), "Generator should be registered");
+    assert!(
+        resolver.is_generator::<YieldsResource>(),
+        "Generator should be registered"
+    );
     // LegacyService was registered via .depends(), not .yield_depends()
-    assert!(!resolver.is_generator::<LegacyService>(), "LegacyService should NOT be a generator");
+    assert!(
+        !resolver.is_generator::<LegacyService>(),
+        "LegacyService should NOT be a generator"
+    );
 }
 
 // =============================================================================
@@ -188,7 +217,7 @@ impl Generator for TrackedResource {
 fn test_generator_cleanup_tracking() {
     let initialized = Arc::new(AtomicBool::new(false));
     let cleaned_up = Arc::new(AtomicBool::new(false));
-    
+
     let resource = TrackedResource {
         id: "tracked",
         initialized: initialized.clone(),
@@ -253,9 +282,15 @@ impl Generator for ResourceB {
 #[test]
 fn test_multiple_generators_different_scopes() {
     let order = Arc::new(AtomicUsize::new(0));
-    
-    let resource_a = ResourceA { name: "a", order: order.clone() };
-    let resource_b = ResourceB { name: "b", order: order.clone() };
+
+    let resource_a = ResourceA {
+        name: "a",
+        order: order.clone(),
+    };
+    let resource_b = ResourceB {
+        name: "b",
+        order: order.clone(),
+    };
 
     let app = UltraApiApp::new()
         .title("Test API")
@@ -264,14 +299,14 @@ fn test_multiple_generators_different_scopes() {
         .yield_depends(resource_b, Scope::Request);
 
     let resolver = app.get_depends_resolver().unwrap();
-    
+
     assert!(resolver.is_generator::<ResourceA>());
     assert!(resolver.is_generator::<ResourceB>());
-    
+
     // Different scopes
     let scope_a = resolver.get_generator_scope::<ResourceA>();
     let scope_b = resolver.get_generator_scope::<ResourceB>();
-    
+
     // Last registration for same type wins, but here types are different
     // Need to check actual registration
     assert!(scope_a.is_some());
@@ -310,7 +345,7 @@ fn test_generator_error_type() {
 
     // Should register without error
     assert!(app.get_depends_resolver().is_some());
-    
+
     let resolver = app.get_depends_resolver().unwrap();
     assert!(resolver.is_generator::<FailingResource>());
 }

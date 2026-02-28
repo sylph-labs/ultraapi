@@ -1,8 +1,8 @@
 // Tests for input/output schema separation feature
 // This tests the read_only and write_only field attributes
 
-use ultraapi::prelude::*;
 use ultraapi::openapi::*;
+use ultraapi::prelude::*;
 
 // Test model with write_only field (field appears in request but not in response)
 #[api_model]
@@ -50,14 +50,14 @@ fn test_write_only_field_not_in_serialization() {
         password: "secret123".to_string(),
         email: "test@example.com".to_string(),
     };
-    
+
     let json = serde_json::to_value(&user).unwrap();
-    
+
     // id, username, email should be present
     assert!(json.get("id").is_some());
     assert!(json.get("username").is_some());
     assert!(json.get("email").is_some());
-    
+
     // password should NOT be in the serialized output (write_only)
     assert!(json.get("password").is_none());
 }
@@ -71,9 +71,9 @@ fn test_read_only_field_not_in_deserialization() {
         "password": "secret123",
         "email": "test@example.com"
     });
-    
+
     let user: UserComplete = serde_json::from_value(json).unwrap();
-    
+
     // id should be default (0) because it was ignored in deserialization
     assert_eq!(user.id, 0);
     assert_eq!(user.username, "testuser");
@@ -85,18 +85,26 @@ fn test_read_only_field_not_in_deserialization() {
 fn test_write_only_schema_property() {
     // Get schema from inventory (this is how UltraAPI generates schemas with patches applied)
     let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
-    let user_complete = schemas.iter().find(|s| s.name == "UserComplete")
+    let user_complete = schemas
+        .iter()
+        .find(|s| s.name == "UserComplete")
         .expect("UserComplete should be in inventory");
     let schema = (user_complete.schema_fn)();
-    
+
     // Password should have writeOnly: true
     if let Some(password_prop) = schema.properties.get("password") {
-        assert!(password_prop.write_only, "password should have write_only = true");
-        assert!(!password_prop.read_only, "password should NOT have read_only = true");
+        assert!(
+            password_prop.write_only,
+            "password should have write_only = true"
+        );
+        assert!(
+            !password_prop.read_only,
+            "password should NOT have read_only = true"
+        );
     } else {
         panic!("password field not found in schema");
     }
-    
+
     // ID should have readOnly: true
     if let Some(id_prop) = schema.properties.get("id") {
         assert!(id_prop.read_only, "id should have read_only = true");
@@ -104,7 +112,7 @@ fn test_write_only_schema_property() {
     } else {
         panic!("id field not found in schema");
     }
-    
+
     // Email should have neither
     if let Some(email_prop) = schema.properties.get("email") {
         assert!(!email_prop.read_only, "email should NOT have read_only");
@@ -119,18 +127,20 @@ fn test_read_only_schema_json_output() {
     // Test that readOnly appears in the JSON schema output
     // Get schema from inventory (this is how UltraAPI generates schemas with patches applied)
     let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
-    let user_complete = schemas.iter().find(|s| s.name == "UserComplete")
+    let user_complete = schemas
+        .iter()
+        .find(|s| s.name == "UserComplete")
         .expect("UserComplete should be in inventory");
     let schema = (user_complete.schema_fn)();
     let json = schema.to_json_value();
-    
+
     // Check readOnly in JSON output for id field
     if let Some(id_json) = json["properties"].get("id") {
         assert_eq!(id_json["readOnly"], serde_json::json!(true));
     } else {
         panic!("id field not in properties");
     }
-    
+
     // Check writeOnly in JSON output for password field
     if let Some(password_json) = json["properties"].get("password") {
         assert_eq!(password_json["writeOnly"], serde_json::json!(true));
@@ -145,10 +155,13 @@ fn test_read_only_schema_json_output() {
 fn test_model_in_inventory() {
     // Both models should be registered in inventory
     let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
-    
+
     let user_complete = schemas.iter().find(|s| s.name == "UserComplete");
-    assert!(user_complete.is_some(), "UserComplete should be in inventory");
-    
+    assert!(
+        user_complete.is_some(),
+        "UserComplete should be in inventory"
+    );
+
     let schema = (user_complete.unwrap().schema_fn)();
     // Verify properties exist
     assert!(schema.properties.contains_key("id"));
@@ -169,20 +182,22 @@ struct SimpleModel {
 fn test_backward_compatibility() {
     // Existing models should still work - get schema from inventory
     let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
-    let simple_model = schemas.iter().find(|s| s.name == "SimpleModel")
+    let simple_model = schemas
+        .iter()
+        .find(|s| s.name == "SimpleModel")
         .expect("SimpleModel should be in inventory");
     let schema = (simple_model.schema_fn)();
-    
+
     // Properties should exist
     assert!(schema.properties.contains_key("id"));
     assert!(schema.properties.contains_key("name"));
-    
+
     // Neither should be read_only or write_only
     if let Some(id_prop) = schema.properties.get("id") {
         assert!(!id_prop.read_only);
         assert!(!id_prop.write_only);
     }
-    
+
     if let Some(name_prop) = schema.properties.get("name") {
         assert!(!name_prop.read_only);
         assert!(!name_prop.write_only);

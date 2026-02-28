@@ -46,7 +46,10 @@ async fn test_oauth2_implicit_flow_scheme_serialization() {
     assert!(flows["implicit"].is_object());
 
     let implicit = &flows["implicit"];
-    assert_eq!(implicit["authorizationUrl"], "https://example.com/authorize");
+    assert_eq!(
+        implicit["authorizationUrl"],
+        "https://example.com/authorize"
+    );
     assert!(implicit["scopes"].is_object());
     assert_eq!(implicit["scopes"]["read"], "Read access");
     assert_eq!(implicit["scopes"]["write"], "Write access");
@@ -211,7 +214,10 @@ async fn test_oauth2_authorization_code_flow_serialization() {
 
     let flows = &oauth2["flows"];
     let auth_code = &flows["authorizationCode"];
-    assert_eq!(auth_code["authorizationUrl"], "https://example.com/authorize");
+    assert_eq!(
+        auth_code["authorizationUrl"],
+        "https://example.com/authorize"
+    );
     assert_eq!(auth_code["tokenUrl"], "https://example.com/token");
     assert_eq!(auth_code["scopes"]["read"], "Read access");
 }
@@ -279,7 +285,10 @@ async fn test_openid_connect_scheme_serialization() {
     let app = UltraApiApp::new()
         .title("OpenID Connect Test")
         .version("0.1.0")
-        .openid_connect("oidc", "https://example.com/.well-known/openid-configuration")
+        .openid_connect(
+            "oidc",
+            "https://example.com/.well-known/openid-configuration",
+        )
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -309,7 +318,10 @@ async fn test_openid_connect_route_has_security_requirement() {
     let app = UltraApiApp::new()
         .title("OpenID Connect Route Test")
         .version("0.1.0")
-        .openid_connect("oidc", "https://example.com/.well-known/openid-configuration")
+        .openid_connect(
+            "oidc",
+            "https://example.com/.well-known/openid-configuration",
+        )
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -437,7 +449,10 @@ async fn test_route_level_security_with_multiple_schemes() {
             "https://example.com/token",
             [("read", "Read access")],
         )
-        .openid_connect("oidc", "https://example.com/.well-known/openid-configuration")
+        .openid_connect(
+            "oidc",
+            "https://example.com/.well-known/openid-configuration",
+        )
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -469,12 +484,7 @@ async fn test_route_level_security_with_multiple_schemes() {
 
     // Check public route has no security requirement
     let public_sec = &body["paths"]["/combined-public"]["get"]["security"];
-    assert!(
-        public_sec.is_null()
-            || public_sec
-                .as_array()
-                .is_some_and(|s| s.is_empty())
-    );
+    assert!(public_sec.is_null() || public_sec.as_array().is_some_and(|s| s.is_empty()));
 }
 
 // ===== App-Level + Route-Level Combined Tests =====

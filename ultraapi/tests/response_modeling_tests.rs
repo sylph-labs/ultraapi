@@ -430,7 +430,8 @@ fn test_custom_skip_deserializing_attribute() {
 
     // Should NOT deserialize the field from JSON - gets default (empty string)
     let parsed: CustomSkipDeserializingResponse =
-        ultraapi::serde_json::from_str(r#"{"id":11,"computed_field":"should_be_ignored"}"#).unwrap();
+        ultraapi::serde_json::from_str(r#"{"id":11,"computed_field":"should_be_ignored"}"#)
+            .unwrap();
     assert_eq!(parsed.id, 11);
     assert_eq!(parsed.computed_field, ""); // Default value (empty string) because skip_deserializing
 }
@@ -548,17 +549,17 @@ fn test_response_model_include() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "id": 1,
         "name": "Test",
         "created_at": "2024-01-01",
         "extra_field": "should be removed"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     assert!(obj.contains_key("id"));
     assert!(obj.contains_key("name"));
     assert!(!obj.contains_key("created_at"));
@@ -573,7 +574,7 @@ fn test_response_model_exclude() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "id": 1,
         "username": "testuser",
@@ -581,10 +582,10 @@ fn test_response_model_exclude() {
         "email": "test@example.com",
         "internal_note": "confidential"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     assert!(obj.contains_key("id"));
     assert!(obj.contains_key("username"));
     assert!(obj.contains_key("email"));
@@ -601,16 +602,16 @@ fn test_response_model_include_takes_precedence() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "id": 1,
         "username": "testuser",
         "email": "test@example.com"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     // Include takes precedence - only id and username should be present
     assert!(obj.contains_key("id"));
     assert!(obj.contains_key("username"));
@@ -622,7 +623,7 @@ fn test_response_model_nested_include_exclude() {
     // Note: The current implementation applies include/exclude at each level recursively.
     // This means if you include=["order_id", "customer"], nested objects inherit this filter.
     // For nested filtering, use exclude only.
-    
+
     let options = ultraapi::ResponseModelOptions {
         // Using only exclude - this will filter password_hash at all levels
         include: None,
@@ -630,7 +631,7 @@ fn test_response_model_nested_include_exclude() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "order_id": 123,
         "customer": {
@@ -642,17 +643,17 @@ fn test_response_model_nested_include_exclude() {
         "total": 99.99,
         "status": "pending"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     // Should have order_id and customer (not excluded)
     assert!(obj.contains_key("order_id"));
     assert!(obj.contains_key("customer"));
     // total and status should be excluded
     assert!(!obj.contains_key("total"));
     assert!(!obj.contains_key("status"));
-    
+
     // Nested: customer should have id, username, email but not password_hash
     let customer = obj.get("customer").unwrap().as_object().unwrap();
     assert!(customer.contains_key("id"));
@@ -669,16 +670,16 @@ fn test_response_model_array_handling() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!([
         {"id": 1, "name": "A", "extra": "x"},
         {"id": 2, "name": "B", "extra": "y"},
         {"id": 3, "name": "C", "extra": "z"}
     ]);
-    
+
     let result = options.apply(value);
     let arr = result.as_array().unwrap();
-    
+
     assert_eq!(arr.len(), 3);
     for item in arr {
         let obj = item.as_object().unwrap();
@@ -695,23 +696,23 @@ fn test_response_model_by_alias() {
     // is stored in options for potential future use with custom serializers.
     // The main behavior is that api_model types with serde(rename) already
     // serialize with aliases by default.
-    
+
     let options = ultraapi::ResponseModelOptions {
         include: None,
         exclude: None,
         by_alias: true,
         content_type: None,
     };
-    
+
     // Without include/exclude, the value passes through unchanged
     let value = ultraapi::serde_json::json!({
         "userId": 1,
         "displayName": "Test User"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     // Keys should remain as-is (no filtering applied)
     assert!(obj.contains_key("userId"));
     assert!(obj.contains_key("displayName"));
@@ -720,16 +721,16 @@ fn test_response_model_by_alias() {
 #[test]
 fn test_response_model_empty_options() {
     let options = ultraapi::ResponseModelOptions::default();
-    
+
     let value = ultraapi::serde_json::json!({
         "id": 1,
         "name": "Test",
         "extra": "should remain"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     // All fields should pass through
     assert_eq!(obj.len(), 3);
     assert!(obj.contains_key("id"));
@@ -745,15 +746,15 @@ fn test_response_model_no_matching_include() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "id": 1,
         "name": "Test"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     // No fields should be included since "nonexistent" doesn't match
     assert!(obj.is_empty());
 }
@@ -766,15 +767,15 @@ fn test_response_model_all_excluded() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "id": 1,
         "name": "Test"
     });
-    
+
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
-    
+
     // All fields should be excluded
     assert!(obj.is_empty());
 }
@@ -792,21 +793,24 @@ fn test_apply_with_aliases_by_alias_true() {
         by_alias: true,
         content_type: None,
     };
-    
+
     // Simulate a serialized value with field names (from serde)
     let value = ultraapi::serde_json::json!({
         "user_id": 1,
         "display_name": "Test User",
         "email": "test@example.com"
     });
-    
+
     // Apply with alias mapping for ApiUser type
     let result = options.apply_with_aliases(value, Some("ApiUser"), true);
     let obj = result.as_object().unwrap();
-    
+
     // Should have alias keys in output
     assert!(obj.contains_key("userId"), "Should have alias 'userId'");
-    assert!(obj.contains_key("displayName"), "Should have alias 'displayName'");
+    assert!(
+        obj.contains_key("displayName"),
+        "Should have alias 'displayName'"
+    );
     assert!(obj.contains_key("email"), "Should have 'email' (no alias)");
 }
 
@@ -819,20 +823,29 @@ fn test_apply_with_aliases_by_alias_false() {
         by_alias: false,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "user_id": 1,
         "display_name": "Test User"
     });
-    
+
     let result = options.apply_with_aliases(value, Some("ApiUser"), false);
     let obj = result.as_object().unwrap();
-    
+
     // Should have field names in output (not aliases)
-    assert!(obj.contains_key("user_id"), "Should have field name 'user_id'");
-    assert!(obj.contains_key("display_name"), "Should have field name 'display_name'");
+    assert!(
+        obj.contains_key("user_id"),
+        "Should have field name 'user_id'"
+    );
+    assert!(
+        obj.contains_key("display_name"),
+        "Should have field name 'display_name'"
+    );
     // Should NOT have aliases
-    assert!(!obj.contains_key("userId"), "Should NOT have alias 'userId'");
+    assert!(
+        !obj.contains_key("userId"),
+        "Should NOT have alias 'userId'"
+    );
 }
 
 #[test]
@@ -844,23 +857,32 @@ fn test_apply_with_aliases_include_by_alias_true() {
         by_alias: true,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "user_id": 1,
         "display_name": "Test User",
         "email": "test@example.com",
         "password_hash": "secret"
     });
-    
+
     let result = options.apply_with_aliases(value, Some("ApiUser"), true);
     let obj = result.as_object().unwrap();
-    
+
     // Should have aliases in output
     assert!(obj.contains_key("userId"), "Should have alias 'userId'");
-    assert!(obj.contains_key("displayName"), "Should have alias 'displayName'");
+    assert!(
+        obj.contains_key("displayName"),
+        "Should have alias 'displayName'"
+    );
     // Should NOT have excluded fields
-    assert!(!obj.contains_key("email"), "Should NOT have 'email' (not in include)");
-    assert!(!obj.contains_key("password_hash"), "Should NOT have 'password_hash' (not in include)");
+    assert!(
+        !obj.contains_key("email"),
+        "Should NOT have 'email' (not in include)"
+    );
+    assert!(
+        !obj.contains_key("password_hash"),
+        "Should NOT have 'password_hash' (not in include)"
+    );
 }
 
 #[test]
@@ -872,23 +894,29 @@ fn test_apply_with_aliases_exclude_by_alias_true() {
         by_alias: true,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "user_id": 1,
         "display_name": "Test User",
         "email": "test@example.com",
         "password_hash": "secret"
     });
-    
+
     let result = options.apply_with_aliases(value, Some("ApiUser"), true);
     let obj = result.as_object().unwrap();
-    
+
     // Should have aliases in output
     assert!(obj.contains_key("userId"), "Should have alias 'userId'");
-    assert!(obj.contains_key("displayName"), "Should have alias 'displayName'");
+    assert!(
+        obj.contains_key("displayName"),
+        "Should have alias 'displayName'"
+    );
     assert!(obj.contains_key("email"), "Should have 'email'");
     // Should NOT have excluded field
-    assert!(!obj.contains_key("password_hash"), "Should NOT have 'password_hash'");
+    assert!(
+        !obj.contains_key("password_hash"),
+        "Should NOT have 'password_hash'"
+    );
 }
 
 #[test]
@@ -902,7 +930,7 @@ fn test_apply_with_aliases_nested() {
         by_alias: true,
         content_type: None,
     };
-    
+
     // Simulate a nested structure similar to what would come from serialization
     // The key thing is that the top-level gets transformed
     let value = ultraapi::serde_json::json!({
@@ -913,21 +941,24 @@ fn test_apply_with_aliases_nested() {
         },
         "total": 99.99
     });
-    
+
     // Using ApiUser as the type - this tests that:
     // 1. Top-level keys are processed
     // 2. Nested objects are recursively processed with the same type
     let result = options.apply_with_aliases(value, Some("ApiUser"), true);
     let obj = result.as_object().unwrap();
-    
+
     // Top-level should NOT have alias (order_id doesn't have alias in OrderWithUser)
     // The nested customer should have aliases (user_id -> userId)
     assert!(obj.contains_key("total"), "Should have 'total'");
-    
+
     // Nested object should also have aliases (recursively processed)
     let customer = obj.get("customer").unwrap().as_object().unwrap();
     // Note: This uses the ApiUser alias mapping, not OrderWithUser's
-    assert!(customer.contains_key("userId"), "Nested should have alias 'userId' (from ApiUser mapping)");
+    assert!(
+        customer.contains_key("userId"),
+        "Nested should have alias 'userId' (from ApiUser mapping)"
+    );
 }
 
 #[test]
@@ -939,17 +970,17 @@ fn test_apply_with_aliases_array() {
         by_alias: true,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!([
         {"user_id": 1, "display_name": "John"},
         {"user_id": 2, "display_name": "Jane"}
     ]);
-    
+
     let result = options.apply_with_aliases(value, Some("ApiUser"), true);
     let arr = result.as_array().unwrap();
-    
+
     assert_eq!(arr.len(), 2);
-    
+
     // Each item should have aliases
     assert!(arr[0].as_object().unwrap().contains_key("userId"));
     assert!(arr[1].as_object().unwrap().contains_key("displayName"));
@@ -964,16 +995,19 @@ fn test_apply_with_aliases_no_type_matching() {
         by_alias: true,
         content_type: None,
     };
-    
+
     let value = ultraapi::serde_json::json!({
         "user_id": 1,
         "display_name": "Test User"
     });
-    
+
     // Use a type name that doesn't exist in the inventory
     let result = options.apply_with_aliases(value, Some("NonExistentType"), true);
     let obj = result.as_object().unwrap();
-    
+
     // Keys should remain unchanged (no alias conversion)
-    assert!(obj.contains_key("user_id"), "Should keep field name when no alias mapping found");
+    assert!(
+        obj.contains_key("user_id"),
+        "Should keep field name when no alias mapping found"
+    );
 }

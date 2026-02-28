@@ -86,6 +86,15 @@ fn is_multipart_type(ty: &Type) -> bool {
     false
 }
 
+fn is_session_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "Session";
+        }
+    }
+    false
+}
+
 /// Check if the type is OAuth2PasswordBearer
 fn is_oauth2_password_bearer_type(ty: &Type) -> bool {
     if let Type::Path(tp) = ty {
@@ -212,14 +221,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let fn_sig = &input_fn.sig;
     let fn_block = &input_fn.block;
 
-    // Parse custom attributes: #[status(N)], #[tag("x")], #[security("x")], 
-    // #[response_model(include={"a","b"})], #[response_model(exclude={"a","b"})], 
+    // Parse custom attributes: #[status(N)], #[tag("x")], #[security("x")],
+    // #[response_model(include={"a","b"})], #[response_model(exclude={"a","b"})],
     // #[response_model(by_alias=true)], #[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")], doc comments
     let mut status_code: Option<u16> = None;
     let mut tags: Vec<String> = Vec::new();
     let mut security_schemes: Vec<String> = Vec::new();
     // Response model shaping options
-    let mut has_response_model: bool = false;  // Track if #[response_model(...)] was used
+    let mut has_response_model: bool = false; // Track if #[response_model(...)] was used
     let mut include_fields: Option<Vec<String>> = None;
     let mut exclude_fields: Option<Vec<String>> = None;
     let mut by_alias: bool = false;
@@ -265,20 +274,32 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             if let syn::Meta::List(list) = &attr.meta {
                 let tokens = list.tokens.clone();
                 let tokens_str = tokens.to_string();
-                
+
                 // Extract include fields
                 if let Some(start) = tokens_str.find("include") {
                     let after_include = &tokens_str[start..];
                     if let Some(eq_pos) = after_include.find('=') {
-                        let after_eq = &after_include[eq_pos+1..];
-                        let end_pos = after_eq.find(|c: char| !c.is_alphanumeric() && c != '"' && c != '{' && c != '}' && c != ',' && c != ' ')
+                        let after_eq = &after_include[eq_pos + 1..];
+                        let end_pos = after_eq
+                            .find(|c: char| {
+                                !c.is_alphanumeric()
+                                    && c != '"'
+                                    && c != '{'
+                                    && c != '}'
+                                    && c != ','
+                                    && c != ' '
+                            })
                             .map(|p| p + eq_pos + start + 1)
                             .unwrap_or(tokens_str.len());
-                        let fields_str = &tokens_str[eq_pos+1+start..end_pos.min(tokens_str.len())];
+                        let fields_str =
+                            &tokens_str[eq_pos + 1 + start..end_pos.min(tokens_str.len())];
                         let fields: Vec<String> = fields_str
                             .split(',')
                             .map(|s| {
-                                s.trim().trim_matches('"').trim_matches('{').trim_matches('}')
+                                s.trim()
+                                    .trim_matches('"')
+                                    .trim_matches('{')
+                                    .trim_matches('}')
                             })
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string())
@@ -288,20 +309,32 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         }
                     }
                 }
-                
+
                 // Extract exclude fields
                 if let Some(start) = tokens_str.find("exclude") {
                     let after_exclude = &tokens_str[start..];
                     if let Some(eq_pos) = after_exclude.find('=') {
-                        let after_eq = &after_exclude[eq_pos+1..];
-                        let end_pos = after_eq.find(|c: char| !c.is_alphanumeric() && c != '"' && c != '{' && c != '}' && c != ',' && c != ' ')
+                        let after_eq = &after_exclude[eq_pos + 1..];
+                        let end_pos = after_eq
+                            .find(|c: char| {
+                                !c.is_alphanumeric()
+                                    && c != '"'
+                                    && c != '{'
+                                    && c != '}'
+                                    && c != ','
+                                    && c != ' '
+                            })
                             .map(|p| p + eq_pos + start + 1)
                             .unwrap_or(tokens_str.len());
-                        let fields_str = &tokens_str[eq_pos+1+start..end_pos.min(tokens_str.len())];
+                        let fields_str =
+                            &tokens_str[eq_pos + 1 + start..end_pos.min(tokens_str.len())];
                         let fields: Vec<String> = fields_str
                             .split(',')
                             .map(|s| {
-                                s.trim().trim_matches('"').trim_matches('{').trim_matches('}')
+                                s.trim()
+                                    .trim_matches('"')
+                                    .trim_matches('{')
+                                    .trim_matches('}')
                             })
                             .filter(|s| !s.is_empty())
                             .map(|s| s.to_string())
@@ -311,23 +344,28 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         }
                     }
                 }
-                
+
                 // Extract by_alias
                 if tokens_str.contains("by_alias") {
-                    if tokens_str.contains("by_alias=true") || tokens_str.contains("by_alias = true") {
+                    if tokens_str.contains("by_alias=true")
+                        || tokens_str.contains("by_alias = true")
+                    {
                         by_alias = true;
-                    } else if tokens_str.contains("by_alias=false") || tokens_str.contains("by_alias = false") {
+                    } else if tokens_str.contains("by_alias=false")
+                        || tokens_str.contains("by_alias = false")
+                    {
                         by_alias = false;
                     }
                 }
-                
+
                 // Extract content_type
                 if let Some(start) = tokens_str.find("content_type") {
                     let after_ct = &tokens_str[start..];
                     if let Some(eq_pos) = after_ct.find('=') {
-                        let after_eq = &after_ct[eq_pos+1..];
+                        let after_eq = &after_ct[eq_pos + 1..];
                         // Find the end of the string value (next comma, closing paren, or end)
-                        let end_pos = after_eq.find(|c: char| c == ',' || c == ')')
+                        let end_pos = after_eq
+                            .find(|c: char| c == ',' || c == ')')
                             .map(|p| p)
                             .unwrap_or(after_eq.len());
                         let ct_value = after_eq[..end_pos].trim().trim_matches('"').trim();
@@ -427,7 +465,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 let mut callback_name: Option<String> = None;
                 let mut callback_expression: Option<String> = None;
                 let mut callback_route_ident: Option<syn::Ident> = None;
-                
+
                 let parser = syn::meta::parser(|meta| {
                     if meta.path.is_ident("name") {
                         let value: LitStr = meta.value()?.parse()?;
@@ -442,12 +480,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                     }
                     Ok(())
                 });
-                
+
                 if let Err(err) = parser.parse2(list.tokens.clone()) {
                     return err.to_compile_error().into();
                 }
-                
-                if let (Some(name), Some(expr), Some(route_ident)) = (callback_name, callback_expression, callback_route_ident) {
+
+                if let (Some(name), Some(expr), Some(route_ident)) =
+                    (callback_name, callback_expression, callback_route_ident)
+                {
                     // Create the inventory::submit! token stream for this callback
                     let submit = quote! {
                         ultraapi::inventory::submit! {
@@ -463,8 +503,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 } else {
                     return syn::Error::new_spanned(
                         list,
-                        "#[callback(...)] requires name, expression, and route parameters"
-                    ).to_compile_error().into();
+                        "#[callback(...)] requires name, expression, and route parameters",
+                    )
+                    .to_compile_error()
+                    .into();
                 }
             }
         }
@@ -514,7 +556,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         if let Some(inner) = extract_inner_type(seg) {
                             // Track that we have generator dependencies - will create shared scope at handler start
                             has_generator_deps = true;
-                            
+
                             dep_extractions.push(quote! {
                                 // Check if it's a registered generator (yield-based dependency)
                                 // Uses shared dep_scope created at handler start for proper cleanup tracking
@@ -653,6 +695,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         .map_err(|e| e)?;
                 });
                 call_args.push(quote!(#pat));
+            } else if is_session_type(ty) {
+                // Session extractor
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::session::Session =
+                        ultraapi::session::Session::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| ultraapi::ApiError::internal(format!("Session extraction error: {:?}", e)))?;
+                });
+                call_args.push(quote!(#pat));
             } else if path_params.contains(&param_name) {
                 if let syn::Pat::Ident(pi) = pat.as_ref() {
                     path_param_types.push((&pi.ident, ty));
@@ -667,6 +717,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 && !is_optional_oauth2_password_bearer_type(ty)
                 && !is_oauth2_auth_code_bearer_type(ty)
                 && !is_optional_oauth2_auth_code_bearer_type(ty)
+                && !is_session_type(ty)
             {
                 has_body = true;
                 body_type = Some(ty);
@@ -746,6 +797,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         && !is_optional_oauth2_password_bearer_type(ty)
                         && !is_oauth2_auth_code_bearer_type(ty)
                         && !is_optional_oauth2_auth_code_bearer_type(ty)
+                        && !is_session_type(ty)
                     {
                         let n = quote!(#pat).to_string();
                         if !path_params.contains(&n) {
@@ -768,7 +820,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
 
     // Generate response based on status code
     let status_lit = proc_macro2::Literal::u16_unsuffixed(success_status);
-    
+
     // Generate the response shaping code if response_model attribute was used
     // This ensures shaping runs even when by_alias=false is explicitly set
     let response_shaping_expr = if has_response_model {
@@ -778,23 +830,23 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         } else {
             quote! { None }
         };
-        
+
         let exclude_expr = if let Some(ref fields) = exclude_fields {
             let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
             quote! { Some(&[#(#field_refs),*] as &'static [&'static str]) }
         } else {
             quote! { None }
         };
-        
+
         let by_alias_expr = if by_alias {
             quote! { true }
         } else {
             quote! { false }
         };
-        
+
         // Get the return type name for alias lookup
         let type_name_expr = quote! { Some(#return_type_name) };
-        
+
         quote! {
             let shaping_options = ultraapi::ResponseModelOptions {
                 include: #include_expr,
@@ -807,7 +859,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     } else {
         quote! { /* No response model shaping */ }
     };
-    
+
     // Generate response based on response_class
     let response_expr = match response_class.as_deref() {
         // HTML response
@@ -1036,14 +1088,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     } else {
         quote! { None }
     };
-    
+
     let exclude_expr = if let Some(ref fields) = exclude_fields {
         let field_refs: Vec<&str> = fields.iter().map(|s| s.as_str()).collect();
         quote! { Some(&[#(#field_refs),*] as &'static [&'static str]) }
     } else {
         quote! { None }
     };
-    
+
     let by_alias_expr = if by_alias {
         quote! { true }
     } else {
@@ -1075,8 +1127,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         Some("redirect") => quote! { ultraapi::ResponseClass::Redirect },
         Some("cookie") => quote! { ultraapi::ResponseClass::Json }, // Cookies still return JSON body
         Some("json") | None => quote! { ultraapi::ResponseClass::Json },
-        other => quote! { 
-            compile_error!(concat!("Invalid response_class: ", #other, ". Valid values are: json, html, text, binary, stream, xml, file, redirect, cookie")) 
+        other => quote! {
+            compile_error!(concat!("Invalid response_class: ", #other, ". Valid values are: json, html, text, binary, stream, xml, file, redirect, cookie"))
         },
     };
 
@@ -1123,13 +1175,13 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         quote! {
             // Clone scope for request cleanup (runs after response is sent)
             let dep_scope_for_request = dep_scope.clone();
-            
+
             // Run function-scope cleanup - capture result to return after cleanup
             let result: Result<ultraapi::axum::response::Response, ultraapi::ApiError> = #response_expr;
-            
+
             // Run function cleanup BEFORE returning (both success and error cases)
             dep_scope.run_function_cleanup().await;
-            
+
             // Spawn request-scope cleanup to run AFTER response is handled
             // This runs regardless of success or error
             tokio::spawn(async move {
@@ -1137,7 +1189,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                 dep_scope_for_request.run_request_cleanup().await;
             });
-            
+
             result
         }
     } else {
@@ -1162,7 +1214,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             use ultraapi::Validate;
 
             #scope_creation
-            
+
             #path_extraction
             #query_extraction
             #(#dep_extractions)*
@@ -1936,15 +1988,15 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         // Build serde attribute for this field if needed
         // Only add if not already present (check if field already has a serde attribute)
         let has_serde_attr = field.attrs.iter().any(|a| a.path().is_ident("serde"));
-        
+
         // Collect all serde-related parts: rename from alias + skip attributes
         let mut all_serde_parts: Vec<proc_macro2::TokenStream> = Vec::new();
-        
+
         // Add rename from alias if present
         for attr in &field_serde_attrs {
             all_serde_parts.push(attr.clone());
         }
-        
+
         // Add skip attributes - but not twice if read_only/write_only already set them
         // Note: read_only sets skip_deserializing, write_only sets skip_serializing
         if skip_serializing && !has_serde_attr {
@@ -1953,7 +2005,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         if skip_deserializing && !has_serde_attr {
             all_serde_parts.push(quote! { skip_deserializing });
         }
-        
+
         // Only add serde attribute if there are parts to add AND no existing serde attribute
         if !all_serde_parts.is_empty() && !has_serde_attr {
             let serde_attr = quote! { #[serde(#(#all_serde_parts),*)] };
@@ -2174,7 +2226,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                 .iter()
                 .find(|(name, _)| name == field_name)
                 .map(|(_, attr)| attr.clone());
-            
+
             match serde_attr {
                 Some(attr) => quote! {
                     #attr
@@ -2197,7 +2249,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                 quote! { (#field_lit, #alias_lit) }
             })
             .collect();
-        
+
         Some(quote! {
             ultraapi::inventory::submit! {
                 ultraapi::FieldAliasInfo {

@@ -25,8 +25,7 @@ async fn get_simple_service(_state: AppState) -> Result<Arc<SimpleService>, Depe
 
 #[test]
 fn test_simple_function_dependency_registration() {
-    let app = UltraApiApp::new()
-        .depends(get_simple_service);
+    let app = UltraApiApp::new().depends(get_simple_service);
 
     // Just verify registration works
     assert!(app.get_depends_resolver().is_some());
@@ -46,15 +45,17 @@ struct UserRepository {
 
 // First level: Database pool from AppState
 async fn get_db_pool(state: AppState) -> Result<Arc<DatabasePool>, DependencyError> {
-    state.get::<DatabasePool>().ok_or_else(|| DependencyError::missing("DatabasePool"))
+    state
+        .get::<DatabasePool>()
+        .ok_or_else(|| DependencyError::missing("DatabasePool"))
 }
 
 // Second level: UserRepository depends on DatabasePool (resolved manually in function)
 async fn get_user_repository(state: AppState) -> Result<Arc<UserRepository>, DependencyError> {
-    let pool = state.get::<DatabasePool>().ok_or_else(|| DependencyError::missing("DatabasePool"))?;
-    Ok(Arc::new(UserRepository {
-        pool,
-    }))
+    let pool = state
+        .get::<DatabasePool>()
+        .ok_or_else(|| DependencyError::missing("DatabasePool"))?;
+    Ok(Arc::new(UserRepository { pool }))
 }
 
 #[test]
@@ -88,8 +89,7 @@ async fn get_config_value(_state: AppState) -> Result<Arc<ConfigValue>, Dependen
 #[test]
 fn test_function_dependency_can_be_resolved() {
     // Build app with Depends function
-    let app = UltraApiApp::new()
-        .depends(get_config_value);
+    let app = UltraApiApp::new().depends(get_config_value);
 
     // Verify registration works
     assert!(app.get_depends_resolver().is_some());
@@ -101,18 +101,16 @@ fn test_function_dependency_can_be_resolved() {
 fn test_cycle_detection_setup() {
     // This test verifies the app can be built with deps that could form cycles
     // Actual cycle detection happens when resolve() is called with circular references
-    
+
     async fn dep_a(_state: AppState) -> Result<Arc<String>, DependencyError> {
         Ok(Arc::new("a".to_string()))
     }
-    
+
     async fn dep_b(_state: AppState) -> Result<Arc<String>, DependencyError> {
         Ok(Arc::new("b".to_string()))
     }
 
-    let app = UltraApiApp::new()
-        .depends(dep_a)
-        .depends(dep_b);
+    let app = UltraApiApp::new().depends(dep_a).depends(dep_b);
 
     // Just verify it builds
     let _ = app;
@@ -129,8 +127,7 @@ async fn get_missing_service(_state: AppState) -> Result<Arc<MissingType>, Depen
 
 #[test]
 fn test_missing_dependency_error_registration() {
-    let app = UltraApiApp::new()
-        .depends(get_missing_service);
+    let app = UltraApiApp::new().depends(get_missing_service);
 
     // Just verify it builds
     let _ = app;
@@ -202,7 +199,7 @@ fn test_multiple_deps_same_type_overwrites() {
     let app = UltraApiApp::new()
         .depends(get_counter_a)
         .depends(get_counter_b);
-    
+
     // The last one wins (test verifies it builds)
     let _ = app;
 }
@@ -220,7 +217,7 @@ struct SimpleState(String);
 #[tokio::test]
 async fn test_state_dep_still_works() {
     let state = SimpleState("test-state".to_string());
-    
+
     let app = UltraApiApp::new()
         .dep(state)
         .include(UltraApiRouter::new("/test").route(__HAYAI_ROUTE_STATE_DEP_ROUTE));

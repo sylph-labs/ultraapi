@@ -95,8 +95,7 @@ async fn file_response() -> FileResponse {
 #[get("/file/with-name")]
 #[response_class("file")]
 async fn file_response_with_name() -> FileResponse {
-    FileResponse::new(vec![0xDE, 0xAD, 0xBE, 0xEF])
-        .filename("example.bin")
+    FileResponse::new(vec![0xDE, 0xAD, 0xBE, 0xEF]).filename("example.bin")
 }
 
 // --- Test 10: File response with custom content-type ---
@@ -182,10 +181,7 @@ async fn test_html_response_content_type() {
     let base = spawn_app().await;
     let resp = reqwest::get(format!("{base}/html")).await.unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(
-        resp.headers().get("content-type").unwrap(),
-        "text/html"
-    );
+    assert_eq!(resp.headers().get("content-type").unwrap(), "text/html");
     let body = resp.text().await.unwrap();
     assert!(body.contains("<html>"));
     assert!(body.contains("<h1>Hello World</h1>"));
@@ -196,10 +192,7 @@ async fn test_text_response_content_type() {
     let base = spawn_app().await;
     let resp = reqwest::get(format!("{base}/text")).await.unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(
-        resp.headers().get("content-type").unwrap(),
-        "text/plain"
-    );
+    assert_eq!(resp.headers().get("content-type").unwrap(), "text/plain");
     let body = resp.text().await.unwrap();
     assert_eq!(body, "This is a plain text response");
 }
@@ -263,7 +256,9 @@ async fn test_file_response_content_type() {
 #[tokio::test]
 async fn test_file_response_with_filename() {
     let base = spawn_app().await;
-    let resp = reqwest::get(format!("{base}/file/with-name")).await.unwrap();
+    let resp = reqwest::get(format!("{base}/file/with-name"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.headers().get("content-type").unwrap(),
@@ -281,13 +276,12 @@ async fn test_file_response_with_filename() {
 #[tokio::test]
 async fn test_file_response_with_content_type() {
     let base = spawn_app().await;
-    let resp = reqwest::get(format!("{base}/file/with-content-type")).await.unwrap();
+    let resp = reqwest::get(format!("{base}/file/with-content-type"))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
     // Custom content-type should be used
-    assert_eq!(
-        resp.headers().get("content-type").unwrap(),
-        "image/png"
-    );
+    assert_eq!(resp.headers().get("content-type").unwrap(), "image/png");
     let bytes = resp.bytes().await.unwrap();
     assert_eq!(bytes, vec![0x89, 0x50, 0x4E, 0x47]);
 }
@@ -298,10 +292,7 @@ async fn test_file_response_with_all() {
     let resp = reqwest::get(format!("{base}/file/with-all")).await.unwrap();
     assert_eq!(resp.status(), 200);
     // Custom content-type should be used
-    assert_eq!(
-        resp.headers().get("content-type").unwrap(),
-        "image/png"
-    );
+    assert_eq!(resp.headers().get("content-type").unwrap(), "image/png");
     // Check content-disposition header with filename (before getting bytes)
     let cd = resp.headers().get("content-disposition").unwrap();
     assert!(cd.to_str().unwrap().contains("attachment"));
@@ -319,11 +310,11 @@ async fn test_openapi_json_default_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /json/default endpoint
     let get_op = &spec["paths"]["/json/default"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     assert!(response.get("application/json").is_some());
 }
 
@@ -333,11 +324,11 @@ async fn test_openapi_html_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /html endpoint
     let get_op = &spec["paths"]["/html"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     assert!(response.get("text/html").is_some());
     // JSON should not be present for HTML response
     assert!(response.get("application/json").is_none());
@@ -349,11 +340,11 @@ async fn test_openapi_text_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /text endpoint
     let get_op = &spec["paths"]["/text"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     assert!(response.get("text/plain").is_some());
     assert!(response.get("application/json").is_none());
 }
@@ -364,11 +355,11 @@ async fn test_openapi_binary_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /binary endpoint
     let get_op = &spec["paths"]["/binary"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     assert!(response.get("application/octet-stream").is_some());
     assert!(response.get("application/json").is_none());
 }
@@ -379,11 +370,11 @@ async fn test_openapi_stream_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /stream endpoint
     let get_op = &spec["paths"]["/stream"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     assert!(response.get("application/octet-stream").is_some());
     assert!(response.get("application/json").is_none());
 }
@@ -394,11 +385,11 @@ async fn test_openapi_xml_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /xml endpoint
     let get_op = &spec["paths"]["/xml"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     assert!(response.get("application/xml").is_some());
     assert!(response.get("application/json").is_none());
 }
@@ -409,11 +400,11 @@ async fn test_openapi_file_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /file endpoint
     let get_op = &spec["paths"]["/file"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     assert!(response.get("application/octet-stream").is_some());
     assert!(response.get("application/json").is_none());
 }
@@ -437,12 +428,18 @@ fn test_response_class_text_content_type() {
 
 #[test]
 fn test_response_class_binary_content_type() {
-    assert_eq!(ResponseClass::Binary.content_type(), "application/octet-stream");
+    assert_eq!(
+        ResponseClass::Binary.content_type(),
+        "application/octet-stream"
+    );
 }
 
 #[test]
 fn test_response_class_stream_content_type() {
-    assert_eq!(ResponseClass::Stream.content_type(), "application/octet-stream");
+    assert_eq!(
+        ResponseClass::Stream.content_type(),
+        "application/octet-stream"
+    );
 }
 
 #[test]
@@ -458,7 +455,10 @@ fn test_response_class_default_is_json() {
 
 #[test]
 fn test_response_class_file_content_type() {
-    assert_eq!(ResponseClass::File.content_type(), "application/octet-stream");
+    assert_eq!(
+        ResponseClass::File.content_type(),
+        "application/octet-stream"
+    );
 }
 
 // --- FileResponse tests ---
@@ -474,15 +474,13 @@ fn test_file_response_new() {
 
 #[test]
 fn test_file_response_builder_with_filename() {
-    let response = FileResponse::new(vec![0x00])
-        .filename("test.txt");
+    let response = FileResponse::new(vec![0x00]).filename("test.txt");
     assert_eq!(response.get_filename(), Some(&"test.txt".to_string()));
 }
 
 #[test]
 fn test_file_response_builder_with_content_type() {
-    let response = FileResponse::new(vec![0x00])
-        .with_content_type("image/png");
+    let response = FileResponse::new(vec![0x00]).with_content_type("image/png");
     assert_eq!(response.get_content_type(), "image/png");
 }
 
@@ -529,16 +527,14 @@ async fn redirect_default() -> RedirectResponse {
 #[get("/redirect/301")]
 #[response_class("redirect")]
 async fn redirect_permanent() -> RedirectResponse {
-    RedirectResponse::new("https://example.com/new-location")
-        .status(301)
+    RedirectResponse::new("https://example.com/new-location").status(301)
 }
 
 /// Redirect endpoint with custom status 302
 #[get("/redirect/302")]
 #[response_class("redirect")]
 async fn redirect_found() -> RedirectResponse {
-    RedirectResponse::new("/other-page")
-        .status(302)
+    RedirectResponse::new("/other-page").status(302)
 }
 
 // --- JSON endpoint with content_type override via response_model ---
@@ -565,9 +561,16 @@ async fn test_redirect_status_and_location() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let resp = client.get(&format!("{base}/test-redirect")).send().await.unwrap();
+    let resp = client
+        .get(&format!("{base}/test-redirect"))
+        .send()
+        .await
+        .unwrap();
     let status = resp.status();
-    let location = resp.headers().get("location").map(|h| h.to_str().unwrap().to_string());
+    let location = resp
+        .headers()
+        .get("location")
+        .map(|h| h.to_str().unwrap().to_string());
     eprintln!("Status: {}, Location: {:?}", status, location);
     // Default is 307 Temporary Redirect
     assert_eq!(status, 307);
@@ -583,9 +586,16 @@ async fn test_redirect_301() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let resp = client.get(&format!("{base}/redirect/301")).send().await.unwrap();
+    let resp = client
+        .get(&format!("{base}/redirect/301"))
+        .send()
+        .await
+        .unwrap();
     let status = resp.status();
-    let location = resp.headers().get("location").map(|h| h.to_str().unwrap().to_string());
+    let location = resp
+        .headers()
+        .get("location")
+        .map(|h| h.to_str().unwrap().to_string());
     // 301 Moved Permanently
     assert_eq!(status, 301);
     // Check Location header
@@ -600,9 +610,16 @@ async fn test_redirect_302() {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
-    let resp = client.get(&format!("{base}/redirect/302")).send().await.unwrap();
+    let resp = client
+        .get(&format!("{base}/redirect/302"))
+        .send()
+        .await
+        .unwrap();
     let status = resp.status();
-    let location = resp.headers().get("location").map(|h| h.to_str().unwrap().to_string());
+    let location = resp
+        .headers()
+        .get("location")
+        .map(|h| h.to_str().unwrap().to_string());
     // 302 Found
     assert_eq!(status, 302);
     // Check Location header
@@ -617,15 +634,15 @@ async fn test_openapi_redirect_content_type() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Print all paths to debug
     let paths = spec["paths"].as_object().unwrap();
     eprintln!("All paths: {:?}", paths.keys().collect::<Vec<_>>());
-    
+
     // Check /redirect endpoint
     let get_op = &spec["paths"]["/redirect"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     // Redirect should have JSON content type (per our implementation)
     assert!(response.get("application/json").is_some());
 }
@@ -638,11 +655,11 @@ async fn test_openapi_content_type_override() {
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
-    
+
     // Check /json/custom-content-type endpoint
     let get_op = &spec["paths"]["/json/custom-content-type"]["get"];
     let response = &get_op["responses"]["200"]["content"];
-    
+
     // Should have text/plain (overridden) instead of application/json
     assert!(response.get("text/plain").is_some());
     assert!(response.get("application/json").is_none());
@@ -661,21 +678,25 @@ fn test_response_class_redirect_content_type() {
 fn test_redirect_response_new() {
     let response = RedirectResponse::new("/test-location");
     assert_eq!(response.get_location(), "/test-location");
-    assert_eq!(response.get_status(), axum::http::StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        response.get_status(),
+        axum::http::StatusCode::TEMPORARY_REDIRECT
+    );
 }
 
 #[test]
 fn test_redirect_response_builder_location() {
-    let response = RedirectResponse::new("/initial")
-        .location("/new-location");
+    let response = RedirectResponse::new("/initial").location("/new-location");
     assert_eq!(response.get_location(), "/new-location");
 }
 
 #[test]
 fn test_redirect_response_builder_status() {
-    let response = RedirectResponse::new("/location")
-        .status(301);
-    assert_eq!(response.get_status(), axum::http::StatusCode::MOVED_PERMANENTLY);
+    let response = RedirectResponse::new("/location").status(301);
+    assert_eq!(
+        response.get_status(),
+        axum::http::StatusCode::MOVED_PERMANENTLY
+    );
 }
 
 #[test]
@@ -684,5 +705,8 @@ fn test_redirect_response_builder_all() {
         .location("https://example.com/end")
         .status(308);
     assert_eq!(response.get_location(), "https://example.com/end");
-    assert_eq!(response.get_status(), axum::http::StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(
+        response.get_status(),
+        axum::http::StatusCode::PERMANENT_REDIRECT
+    );
 }

@@ -145,9 +145,21 @@ mod tests {
 
     #[test]
     fn test_cli_parse_run() {
-        let cli = Cli::parse_from(&["ultraapi", "run", "myapp", "--host", "127.0.0.1", "--port", "8080"]);
+        let cli = Cli::parse_from(&[
+            "ultraapi",
+            "run",
+            "myapp",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8080",
+        ]);
         match cli.command {
-            Commands::Run { app_module, host, port } => {
+            Commands::Run {
+                app_module,
+                host,
+                port,
+            } => {
                 assert_eq!(app_module, "myapp");
                 assert_eq!(host, "127.0.0.1");
                 assert_eq!(port, 8080);
@@ -160,7 +172,11 @@ mod tests {
     fn test_cli_parse_dev() {
         let cli = Cli::parse_from(&["ultraapi", "dev", "myapp", "--port", "4000"]);
         match cli.command {
-            Commands::Dev { app_module, host, port } => {
+            Commands::Dev {
+                app_module,
+                host,
+                port,
+            } => {
                 assert_eq!(app_module, "myapp");
                 assert_eq!(host, "0.0.0.0");
                 assert_eq!(port, 4000);
@@ -173,7 +189,11 @@ mod tests {
     fn test_cli_defaults() {
         let cli = Cli::parse_from(&["ultraapi", "run", "myapp"]);
         match cli.command {
-            Commands::Run { app_module, host, port } => {
+            Commands::Run {
+                app_module,
+                host,
+                port,
+            } => {
                 assert_eq!(app_module, "myapp");
                 assert_eq!(host, "0.0.0.0");
                 assert_eq!(port, 3000);

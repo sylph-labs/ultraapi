@@ -45,7 +45,7 @@ impl Generator for RequestScopedGenerator {
 #[test]
 fn test_yield_depends_request_scope_registration() {
     REQUEST_COUNTER.store(0, Ordering::SeqCst);
-    
+
     let generator = RequestScopedGenerator;
 
     let app = UltraApiApp::new()
@@ -54,19 +54,20 @@ fn test_yield_depends_request_scope_registration() {
         .yield_depends(generator, Scope::Request);
 
     let resolver = app.get_depends_resolver().expect("Resolver should exist");
-    
+
     // Verify it's registered as a generator
-    assert!(resolver.is_generator::<RequestScopedService>(), 
-        "Should be registered as generator");
-    
+    assert!(
+        resolver.is_generator::<RequestScopedService>(),
+        "Should be registered as generator"
+    );
+
     // Verify the scope is Request
     let scope = resolver.get_generator_scope::<RequestScopedService>();
-    assert_eq!(scope, Some(Scope::Request), 
-        "Scope should be Request");
+    assert_eq!(scope, Some(Scope::Request), "Scope should be Request");
 }
 
 // =============================================================================
-// Test 2: Verify that Scope::Function creates singleton behavior  
+// Test 2: Verify that Scope::Function creates singleton behavior
 // =============================================================================
 
 static FUNCTION_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -96,7 +97,7 @@ impl Generator for FunctionGenerator {
 #[test]
 fn test_yield_depends_function_scope_registration() {
     FUNCTION_COUNTER.store(0, Ordering::SeqCst);
-    
+
     let generator = FunctionGenerator;
 
     let app = UltraApiApp::new()
@@ -105,15 +106,16 @@ fn test_yield_depends_function_scope_registration() {
         .yield_depends(generator, Scope::Function);
 
     let resolver = app.get_depends_resolver().expect("Resolver should exist");
-    
+
     // Verify it's registered as a generator
-    assert!(resolver.is_generator::<FunctionService>(), 
-        "Should be registered as generator");
-    
+    assert!(
+        resolver.is_generator::<FunctionService>(),
+        "Should be registered as generator"
+    );
+
     // Verify the scope is Function
     let scope = resolver.get_generator_scope::<FunctionService>();
-    assert_eq!(scope, Some(Scope::Function), 
-        "Scope should be Function");
+    assert_eq!(scope, Some(Scope::Function), "Scope should be Function");
 }
 
 // =============================================================================
@@ -123,7 +125,7 @@ fn test_yield_depends_function_scope_registration() {
 #[tokio::test]
 async fn test_request_scoped_generator_creates_fresh_instances() {
     REQUEST_COUNTER.store(0, Ordering::SeqCst);
-    
+
     let generator = RequestScopedGenerator;
 
     let app = UltraApiApp::new()
@@ -132,23 +134,38 @@ async fn test_request_scoped_generator_creates_fresh_instances() {
         .yield_depends(generator, Scope::Request);
 
     let resolver = app.get_depends_resolver().expect("Resolver should exist");
-    
+
     // Create dependency scope for tracking cleanup
     let dep_scope = Arc::new(DependencyScope::new());
     let state = AppState::new();
-    
+
     // First call - should get instance 0
-    let result1 = resolver.resolve_generator::<RequestScopedService>(&state, &dep_scope).await;
-    assert!(result1.is_ok(), "First resolve should succeed: {:?}", result1);
-    
+    let result1 = resolver
+        .resolve_generator::<RequestScopedService>(&state, &dep_scope)
+        .await;
+    assert!(
+        result1.is_ok(),
+        "First resolve should succeed: {:?}",
+        result1
+    );
+
     // Second call - should get instance 1 (fresh instance)
-    let result2 = resolver.resolve_generator::<RequestScopedService>(&state, &dep_scope).await;
-    assert!(result2.is_ok(), "Second resolve should succeed: {:?}", result2);
-    
+    let result2 = resolver
+        .resolve_generator::<RequestScopedService>(&state, &dep_scope)
+        .await;
+    assert!(
+        result2.is_ok(),
+        "Second resolve should succeed: {:?}",
+        result2
+    );
+
     // Verify the counter incremented (meaning new instances were created)
     // The counter should be 2 after two calls
-    assert_eq!(REQUEST_COUNTER.load(Ordering::SeqCst), 2, 
-        "Counter should be 2 after two resolves");
+    assert_eq!(
+        REQUEST_COUNTER.load(Ordering::SeqCst),
+        2,
+        "Counter should be 2 after two resolves"
+    );
 }
 
 // =============================================================================
@@ -211,22 +228,24 @@ struct MixedSingletonService {
 #[test]
 fn test_mixed_dependencies_work_together() {
     MIXED_COUNTER.store(0, Ordering::SeqCst);
-    
+
     let generator = MixedRequestGenerator;
     let singleton = MixedSingletonService { value: 42 };
 
     let app = UltraApiApp::new()
         .title("Test API")
         .version("1.0.0")
-        .dep(singleton)  // Singleton
-        .yield_depends(generator, Scope::Request);  // Request-scoped
+        .dep(singleton) // Singleton
+        .yield_depends(generator, Scope::Request); // Request-scoped
 
     let resolver = app.get_depends_resolver().expect("Resolver should exist");
-    
+
     // Both should be available
-    assert!(resolver.is_generator::<MixedRequestService>(), 
-        "Request-scoped should be registered");
-    
+    assert!(
+        resolver.is_generator::<MixedRequestService>(),
+        "Request-scoped should be registered"
+    );
+
     let scope = resolver.get_generator_scope::<MixedRequestService>();
     assert_eq!(scope, Some(Scope::Request), "Should be request scope");
 }
@@ -253,6 +272,8 @@ fn test_depends_function_still_works() {
 
     let resolver = app.get_depends_resolver().expect("Resolver should exist");
     // The function is registered, not a generator
-    assert!(!resolver.is_generator::<FuncService>(), 
-        "Function dependency should not be a generator");
+    assert!(
+        !resolver.is_generator::<FuncService>(),
+        "Function dependency should not be a generator"
+    );
 }

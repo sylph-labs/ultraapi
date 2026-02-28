@@ -39,10 +39,7 @@ async fn create_order(body: Order) -> Order {
 #[get("/orders/{id}")]
 #[tag("orders")]
 async fn get_order(id: String) -> Result<Order, ApiError> {
-    Ok(Order {
-        id,
-        amount: 100.0,
-    })
+    Ok(Order { id, amount: 100.0 })
 }
 
 // --- Helpers ---
@@ -125,10 +122,7 @@ async fn test_webhook_operation_id_and_content_type_implicit() {
     let operation_id = webhook_post
         .get("operationId")
         .expect("operationId should exist");
-    assert!(
-        operation_id.is_string(),
-        "operationId should be a string"
-    );
+    assert!(operation_id.is_string(), "operationId should be a string");
     assert!(
         operation_id.as_str().unwrap().contains("payment_webhook"),
         "operationId should contain payment_webhook"
@@ -138,9 +132,7 @@ async fn test_webhook_operation_id_and_content_type_implicit() {
     let request_body = webhook_post
         .get("requestBody")
         .expect("requestBody should exist");
-    let content = request_body
-        .get("content")
-        .expect("content should exist");
+    let content = request_body.get("content").expect("content should exist");
     let json_content = content
         .get("application/json")
         .expect("application/json should exist");
@@ -203,7 +195,10 @@ async fn test_webhook_not_in_paths_explicit_routing() {
     );
 
     // owner routes は paths に存在すること
-    assert!(paths.contains_key("/api/orders"), "owner route should be in paths");
+    assert!(
+        paths.contains_key("/api/orders"),
+        "owner route should be in paths"
+    );
     assert!(
         paths.contains_key("/api/orders/{id}"),
         "owner route should be in paths"
@@ -231,9 +226,7 @@ async fn test_webhook_operation_id_and_content_type_explicit() {
     let request_body = webhook_post
         .get("requestBody")
         .expect("requestBody should exist");
-    let content = request_body
-        .get("content")
-        .expect("content should exist");
+    let content = request_body.get("content").expect("content should exist");
     let json_content = content
         .get("application/json")
         .expect("application/json should exist");
@@ -248,9 +241,7 @@ async fn test_webhook_tags_included() {
     let webhook_post = &json["webhooks"]["paymentWebhook"]["post"];
 
     // tags の確認
-    let tags = webhook_post
-        .get("tags")
-        .expect("tags should exist");
+    let tags = webhook_post.get("tags").expect("tags should exist");
     assert!(tags.is_array());
 
     let tags_array = tags.as_array().unwrap();

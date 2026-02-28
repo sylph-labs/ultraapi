@@ -82,12 +82,12 @@ pub enum SecurityScheme {
         bearer_format: Option<String>,
     },
     /// HTTP Basic authentication
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use ultraapi::openapi::SecurityScheme;
-    /// 
+    ///
     /// let basic = SecurityScheme::Basic {
     ///     realm: Some("UltraAPI".to_string()),
     /// };
@@ -105,9 +105,7 @@ pub enum SecurityScheme {
     /// OAuth2 authentication with flows
     OAuth2(OAuth2Flows),
     /// OpenID Connect authentication
-    OpenIdConnect {
-        url: String,
-    },
+    OpenIdConnect { url: String },
     /// Custom raw security scheme (for advanced use cases)
     Raw(SecuritySchemeDef),
 }
@@ -968,9 +966,7 @@ fn schema_deprecated(schema: &schemars::schema::Schema) -> bool {
 }
 
 /// Extract all metadata from schemars schema at once (description, read_only, write_only)
-fn schema_metadata(
-    schema: &schemars::schema::Schema,
-) -> (Option<String>, bool, bool) {
+fn schema_metadata(schema: &schemars::schema::Schema) -> (Option<String>, bool, bool) {
     let description = schema_description(schema);
     let read_only = schema_read_only(schema);
     let write_only = schema_write_only(schema);
@@ -1092,7 +1088,7 @@ fn property_from_schemars_schema(
 ) -> Property {
     // Extract metadata (description, read_only, write_only) from schema
     let (description, read_only, write_only) = schema_metadata(schema);
-    
+
     match schema {
         schemars::schema::Schema::Object(obj) => {
             if let Some(ref reference) = obj.reference {

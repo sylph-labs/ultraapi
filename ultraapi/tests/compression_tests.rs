@@ -49,7 +49,7 @@ async fn spawn_app_with_compression() -> String {
     let app = UltraApiApp::new()
         .title("Compression Test API")
         .version("0.1.0")
-        .gzip()  // Enable gzip compression
+        .gzip() // Enable gzip compression
         .into_router();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -80,42 +80,46 @@ async fn spawn_app_without_compression() -> String {
 #[tokio::test]
 async fn test_compression_gzip_with_accept_encoding_gzip() {
     let base = spawn_app_with_compression().await;
-    
+
     // Use reqwest with gzip feature enabled, but disable auto-decompression
     let client = reqwest::Client::builder()
         .gzip(false)
         .brotli(false)
         .build()
         .unwrap();
-    
+
     let resp = client
         .get(format!("{}/compress/gzip", base))
         .header("Accept-Encoding", "gzip")
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
-    
+
     // Check that Content-Encoding header is set to gzip
-    let content_encoding = resp.headers()
+    let content_encoding = resp
+        .headers()
         .get("content-encoding")
         .map(|v| v.to_str().unwrap());
-    
-    assert!(content_encoding.is_some(), "Content-Encoding should be present");
+
+    assert!(
+        content_encoding.is_some(),
+        "Content-Encoding should be present"
+    );
     assert_eq!(content_encoding.unwrap(), "gzip", "Should be gzip encoded");
-    
+
     // Verify we can decompress the response
     let body = resp.bytes().await.unwrap();
-    
+
     // Manually decompress to verify it's actually gzip compressed
     use flate2::read::GzDecoder;
     use std::io::Read;
-    
+
     let mut decoder = GzDecoder::new(&body[..]);
     let mut decompressed = String::new();
     decoder.read_to_string(&mut decompressed).unwrap();
-    
+
     // Verify the content is correct
     assert!(decompressed.contains("This is test content"));
 }
@@ -128,16 +132,16 @@ async fn test_compression_without_accept_encoding() {
         .brotli(false)
         .build()
         .unwrap();
-    
+
     let resp = client
         .get(format!("{}/compress/gzip", base))
         .header("Accept-Encoding", "identity")
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
-    
+
     // With Accept-Encoding: identity, response should NOT be compressed
     let content_encoding = resp.headers().get("content-encoding");
     assert!(
@@ -154,21 +158,23 @@ async fn test_no_compression_when_disabled() {
         .brotli(false)
         .build()
         .unwrap();
-    
+
     let resp = client
         .get(format!("{}/compress/gzip", base))
         .header("Accept-Encoding", "gzip")
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
-    
+
     // Without compression enabled, Content-Encoding should NOT be present
-    let content_encoding = resp.headers()
-        .get("content-encoding");
-    
-    assert!(content_encoding.is_none(), "Content-Encoding should not be present when compression is disabled");
+    let content_encoding = resp.headers().get("content-encoding");
+
+    assert!(
+        content_encoding.is_none(),
+        "Content-Encoding should not be present when compression is disabled"
+    );
 }
 
 #[tokio::test]
@@ -179,16 +185,16 @@ async fn test_compression_small_response() {
         .brotli(true)
         .build()
         .unwrap();
-    
+
     let resp = client
         .get(format!("{}/compress/small", base))
         .header("Accept-Encoding", "identity")
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
-    
+
     // Small responses might not be compressed (depends on threshold)
     // Just verify the response is valid
     let body: Message = resp.json().await.unwrap();
@@ -203,21 +209,22 @@ async fn test_compression_text_response() {
         .brotli(false)
         .build()
         .unwrap();
-    
+
     let resp = client
         .get(format!("{}/compress/text", base))
         .header("Accept-Encoding", "gzip")
         .send()
         .await
         .unwrap();
-    
+
     assert_eq!(resp.status(), 200);
-    
+
     // Check Content-Encoding
-    let content_encoding = resp.headers()
+    let content_encoding = resp
+        .headers()
         .get("content-encoding")
         .map(|v| v.to_str().unwrap());
-    
+
     assert!(content_encoding.is_some());
     assert_eq!(content_encoding.unwrap(), "gzip");
 }

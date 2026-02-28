@@ -16,16 +16,13 @@ mod mount_tests {
     #[tokio::test]
     async fn test_mount_sub_app_docs() {
         // Create a sub-app
-        let sub_app = UltraApiApp::new()
-            .title("Sub API")
-            .version("1.0.0");
+        let sub_app = UltraApiApp::new().title("Sub API").version("1.0.0");
 
         // Create main app with mounted sub-app
-        let app = UltraApiApp::new()
-            .mount("/sub", sub_app);
+        let app = UltraApiApp::new().mount("/sub", sub_app);
 
         let router = app.into_router();
-        
+
         // Request /sub/docs
         let response = router
             .clone()
@@ -39,7 +36,7 @@ mod mount_tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        
+
         // Check content-type is HTML
         let content_type = response
             .headers()
@@ -53,16 +50,13 @@ mod mount_tests {
     #[tokio::test]
     async fn test_mount_sub_app_openapi() {
         // Create a sub-app
-        let sub_app = UltraApiApp::new()
-            .title("Sub API")
-            .version("1.0.0");
+        let sub_app = UltraApiApp::new().title("Sub API").version("1.0.0");
 
         // Create main app with mounted sub-app
-        let app = UltraApiApp::new()
-            .mount("/sub", sub_app);
+        let app = UltraApiApp::new().mount("/sub", sub_app);
 
         let router = app.into_router();
-        
+
         // Request /sub/openapi.json
         let response = router
             .clone()
@@ -76,7 +70,7 @@ mod mount_tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        
+
         // Check content-type is JSON
         let content_type = response
             .headers()
@@ -90,16 +84,13 @@ mod mount_tests {
     #[tokio::test]
     async fn test_main_openapi_excludes_sub_routes() {
         // Create a sub-app
-        let sub_app = UltraApiApp::new()
-            .title("Sub API")
-            .version("1.0.0");
+        let sub_app = UltraApiApp::new().title("Sub API").version("1.0.0");
 
         // Create main app with mounted sub-app
-        let app = UltraApiApp::new()
-            .mount("/sub", sub_app);
+        let app = UltraApiApp::new().mount("/sub", sub_app);
 
         let router = app.into_router();
-        
+
         // Request main /openapi.json
         let response = router
             .clone()
@@ -113,13 +104,13 @@ mod mount_tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        
+
         // Read body
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let json_str = String::from_utf8(body.into()).unwrap();
-        
+
         // The main openapi.json should NOT contain "/sub" paths
         assert!(!json_str.contains("/sub/"));
     }
@@ -139,11 +130,10 @@ mod static_files_tests {
         fs::write(&file_path, "Hello, World!").unwrap();
 
         // Create app with static files
-        let app = UltraApiApp::new()
-            .static_files("/static", temp_dir.path().to_str().unwrap());
+        let app = UltraApiApp::new().static_files("/static", temp_dir.path().to_str().unwrap());
 
         let router = app.into_router();
-        
+
         // Request the static file
         let response = router
             .clone()
@@ -157,7 +147,7 @@ mod static_files_tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
-        
+
         // Check content
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
@@ -172,11 +162,10 @@ mod static_files_tests {
         let temp_dir = TempDir::new().unwrap();
 
         // Create app with static files
-        let app = UltraApiApp::new()
-            .static_files("/static", temp_dir.path().to_str().unwrap());
+        let app = UltraApiApp::new().static_files("/static", temp_dir.path().to_str().unwrap());
 
         let router = app.into_router();
-        
+
         // Request a non-existent file
         let response = router
             .clone()
@@ -205,14 +194,20 @@ mod templates_tests {
         // Create a temp directory with a template
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("hello.html");
-        fs::write(&template_path, "<html><body>Hello, {{ name }}!</body></html>").unwrap();
+        fs::write(
+            &template_path,
+            "<html><body>Hello, {{ name }}!</body></html>",
+        )
+        .unwrap();
 
         // Create templates
         let templates = Templates::new(temp_dir.path()).unwrap();
-        
+
         // Render template
-        let html = templates.render("hello.html", serde_json::json!({ "name": "World" })).unwrap();
-        
+        let html = templates
+            .render("hello.html", serde_json::json!({ "name": "World" }))
+            .unwrap();
+
         assert!(html.contains("Hello, World!"));
     }
 
@@ -220,7 +215,7 @@ mod templates_tests {
     #[tokio::test]
     async fn test_template_response_content_type() {
         use axum::response::IntoResponse;
-        
+
         // Create a temp directory with a template
         let temp_dir = TempDir::new().unwrap();
         let template_path = temp_dir.path().join("hello.html");
@@ -228,13 +223,15 @@ mod templates_tests {
 
         // Create templates
         let templates = Templates::new(temp_dir.path()).unwrap();
-        
+
         // Create template response
-        let response = templates.template_response("hello.html", serde_json::json!({})).unwrap();
-        
+        let response = templates
+            .template_response("hello.html", serde_json::json!({}))
+            .unwrap();
+
         // Convert to response
         let axum_response: axum::response::Response = response.into_response();
-        
+
         // Check content-type
         let content_type = axum_response
             .headers()
@@ -253,8 +250,7 @@ mod templates_tests {
         fs::write(&template_path, "<html><body>Hello!</body></html>").unwrap();
 
         // Create app with templates_dir
-        let app = UltraApiApp::new()
-            .templates_dir(temp_dir.path());
+        let app = UltraApiApp::new().templates_dir(temp_dir.path());
 
         // Get the router - this should succeed without panicking
         let _router = app.into_router();

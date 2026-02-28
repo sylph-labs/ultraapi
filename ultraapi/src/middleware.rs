@@ -9,17 +9,19 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use std::sync::Arc;
 
+use crate::session::SessionConfig;
+
 // ============================================================================
 // Basic Authentication Utilities
 // ============================================================================
 
 /// Basic認証の資格情報を格納する構造体
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use ultraapi::middleware::decode_basic_header;
-/// 
+///
 /// // "Basic dXNlcm5hbWU6cGFzc3dvcmQ=" -> "username:password"
 /// let credentials = decode_basic_header("dXNlcm5hbWU6cGFzc3dvcmQ=");
 /// assert!(credentials.is_some());
@@ -36,23 +38,23 @@ pub struct BasicCredentials {
 }
 
 /// HTTP Basic認証ヘッダーから資格情報をデコードする
-/// 
+///
 /// 引数には "Basic " プレフィックスを除いたbase64エンコードされた文字列を渡す
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `encoded` - base64エンコードされた "username:password" 文字列
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Some(BasicCredentials)` - デコード成功時
 /// * `None` - 無効なbase64または":"区切りの形式でない場合
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use ultraapi::middleware::decode_basic_header;
-/// 
+///
 /// // Basic dXNlcm5hbWU6cGFzc3dvcmQ= (base64 of "username:password")
 /// let result = decode_basic_header("dXNlcm5hbWU6cGFzc3dvcmQ=");
 /// assert!(result.is_some());
@@ -60,13 +62,13 @@ pub struct BasicCredentials {
 pub fn decode_basic_header(encoded: &str) -> Option<BasicCredentials> {
     // base64デコード
     let decoded = BASE64.decode(encoded.trim()).ok()?;
-    
+
     // UTF-8文字列に変換
     let decoded_str = String::from_utf8(decoded).ok()?;
-    
+
     // ":" で分割（パスワードに":"を含む場合があるため、split_onceを使用）
     let (username, password) = decoded_str.split_once(':')?;
-    
+
     Some(BasicCredentials {
         username: username.to_string(),
         password: password.to_string(),
@@ -74,27 +76,27 @@ pub fn decode_basic_header(encoded: &str) -> Option<BasicCredentials> {
 }
 
 /// HTTP Basic認証ヘッダーをデコードする（Authorizationヘッダー全体対応）
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `auth_header` - "Basic dXNlcm5hbWU6cGFzc3dvcmQ=" 形式のヘッダー値
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Some(BasicCredentials)` - デコード成功時
 /// * `None` - ヘッダーが無効またはデコード失敗時
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use ultraapi::middleware::parse_basic_header;
-/// 
+///
 /// let result = parse_basic_header("Basic dXNlcm5hbWU6cGFzc3dvcmQ=");
 /// assert!(result.is_some());
 /// ```
 pub fn parse_basic_header(auth_header: &str) -> Option<BasicCredentials> {
     let header = auth_header.trim();
-    
+
     // "Basic " プレフィックスのチェック（大文字小文字を区別しない）
     if header.len() > 6 && header[..6].eq_ignore_ascii_case("basic ") {
         decode_basic_header(&header[6..])
@@ -140,12 +142,12 @@ impl SecuritySchemeConfig {
     }
 
     /// Create a new config for HTTP Basic auth in Authorization header
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use ultraapi::middleware::SecuritySchemeConfig;
-    /// 
+    ///
     /// let config = SecuritySchemeConfig::basic("basicAuth");
     /// ```
     pub fn basic(name: impl Into<String>) -> Self {
@@ -203,7 +205,11 @@ pub trait AuthValidator: Send + Sync {
 
     /// Validate scopes - called after successful credential validation
     /// Override this to implement scope-based authorization
-    fn validate_scopes(&self, _credentials: &Credentials, _required_scopes: &[String]) -> Result<(), AuthError> {
+    fn validate_scopes(
+        &self,
+        _credentials: &Credentials,
+        _required_scopes: &[String],
+    ) -> Result<(), AuthError> {
         Ok(())
     }
 }
@@ -220,11 +226,11 @@ pub struct Credentials {
     /// The scopes that were validated (if any)
     pub scopes: Vec<String>,
     /// ユーザー名（Basic認証の場合のみ）
-    /// 
+    ///
     /// Basic認証では `username:password` の形式でデコードされる
     pub username: Option<String>,
     /// パスワード（Basic認証の場合のみ）
-    /// 
+    ///
     /// Basic認証では `username:password` の形式でデコードされる
     pub password: Option<String>,
 }
@@ -243,7 +249,11 @@ impl Credentials {
     }
 
     /// Create credentials with security scheme name
-    pub fn with_scheme(scheme: impl Into<String>, value: impl Into<String>, security_scheme: impl Into<String>) -> Self {
+    pub fn with_scheme(
+        scheme: impl Into<String>,
+        value: impl Into<String>,
+        security_scheme: impl Into<String>,
+    ) -> Self {
         Self {
             scheme: scheme.into(),
             value: value.into(),
@@ -255,17 +265,17 @@ impl Credentials {
     }
 
     /// Basic認証の資格情報からCredentialsを作成
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `basic` - BasicCredentials
     /// * `security_scheme` - OpenAPIセキュリティスキーム名
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use ultraapi::middleware::{Credentials, BasicCredentials, decode_basic_header};
-    /// 
+    ///
     /// let basic = BasicCredentials {
     ///     username: "user".to_string(),
     ///     password: "pass".to_string(),
@@ -277,7 +287,7 @@ impl Credentials {
     pub fn from_basic(basic: BasicCredentials, security_scheme: impl Into<String>) -> Self {
         let encoded = format!("{}:{}", basic.username, basic.password);
         let encoded_bytes = BASE64.encode(encoded.as_bytes());
-        
+
         Self {
             scheme: "basic".to_string(),
             value: encoded_bytes,
@@ -289,15 +299,15 @@ impl Credentials {
     }
 
     /// Basic認証かどうかを確認
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use ultraapi::middleware::Credentials;
-    /// 
+    ///
     /// let basic_creds = Credentials::new("basic", "dXNlcjpwYXNz");
     /// assert!(basic_creds.is_basic());
-    /// 
+    ///
     /// let bearer_creds = Credentials::new("bearer", "token123");
     /// assert!(!bearer_creds.is_basic());
     /// ```
@@ -392,14 +402,14 @@ impl AuthValidator for ApiKeyValidator {
 }
 
 /// HTTP Basic認証のバリデーター
-/// 
+///
 /// ユーザー名とパスワードの組み合わせを検証する
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use ultraapi::middleware::{BasicAuthValidator, AuthValidator, Credentials};
-/// 
+///
 /// let validator = BasicAuthValidator::new(vec![
 ///     ("admin".to_string(), "secret123".to_string()),
 ///     ("user".to_string(), "password".to_string()),
@@ -412,9 +422,9 @@ pub struct BasicAuthValidator {
 
 impl BasicAuthValidator {
     /// 新しいBasicAuthValidatorを作成
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `credentials` - (username, password) のベクター
     pub fn new(credentials: Vec<(String, String)>) -> Self {
         Self {
@@ -423,8 +433,13 @@ impl BasicAuthValidator {
     }
 
     /// 単一のユーザー名/パスワード组合せを追加
-    pub fn with_credential(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
-        self.valid_credentials.push((username.into(), password.into()));
+    pub fn with_credential(
+        mut self,
+        username: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
+        self.valid_credentials
+            .push((username.into(), password.into()));
         self
     }
 }
@@ -437,13 +452,21 @@ impl AuthValidator for BasicAuthValidator {
         }
 
         // username と password を取得
-        let username = credentials.username.as_ref()
+        let username = credentials
+            .username
+            .as_ref()
             .ok_or_else(|| AuthError::unauthorized("Invalid Basic credentials"))?;
-        let password = credentials.password.as_ref()
+        let password = credentials
+            .password
+            .as_ref()
             .ok_or_else(|| AuthError::unauthorized("Invalid Basic credentials"))?;
 
         // 有効な資格情報かチェック
-        if self.valid_credentials.iter().any(|(u, p)| u == username && p == password) {
+        if self
+            .valid_credentials
+            .iter()
+            .any(|(u, p)| u == username && p == password)
+        {
             Ok(())
         } else {
             Err(AuthError::unauthorized("Invalid username or password"))
@@ -486,7 +509,11 @@ impl<V: AuthValidator> AuthValidator for ScopedAuthValidator<V> {
         self.inner.validate(credentials)
     }
 
-    fn validate_scopes(&self, credentials: &Credentials, required_scopes: &[String]) -> Result<(), AuthError> {
+    fn validate_scopes(
+        &self,
+        credentials: &Credentials,
+        required_scopes: &[String],
+    ) -> Result<(), AuthError> {
         // First validate the credentials
         self.inner.validate(credentials)?;
 
@@ -496,7 +523,9 @@ impl<V: AuthValidator> AuthValidator for ScopedAuthValidator<V> {
         }
 
         // Get scopes for this credential
-        let granted_scopes = self.scope_map.get(&credentials.value)
+        let granted_scopes = self
+            .scope_map
+            .get(&credentials.value)
             .cloned()
             .unwrap_or_else(|| {
                 // If no specific mapping, check if value starts with "valid-" grant default scope
@@ -584,10 +613,18 @@ impl AuthLayer {
                                             Credentials::from_basic(basic, &scheme.name)
                                         } else {
                                             // 無効なBasicヘッダー
-                                            Credentials::with_scheme("basic", scheme_value, &scheme.name)
+                                            Credentials::with_scheme(
+                                                "basic",
+                                                scheme_value,
+                                                &scheme.name,
+                                            )
                                         }
                                     } else {
-                                        Credentials::with_scheme(scheme_name, scheme_value, &scheme.name)
+                                        Credentials::with_scheme(
+                                            scheme_name,
+                                            scheme_value,
+                                            &scheme.name,
+                                        )
                                     }
                                 } else {
                                     // No scheme, treat entire value as the credential
@@ -746,9 +783,7 @@ impl AuthLayer {
                     super::ApiError::unauthorized("Missing authorization header")
                 } else {
                     // Schemes configured but no credentials provided
-                    super::ApiError::unauthorized(
-                        "Missing authentication credentials",
-                    )
+                    super::ApiError::unauthorized("Missing authentication credentials")
                 };
                 let mut response = error.into_response();
                 // Add WWW-Authenticate header if configured
@@ -770,7 +805,7 @@ impl AuthLayer {
         }
 
         let mut challenges: Vec<String> = Vec::new();
-        
+
         for scheme in &self.security_schemes {
             match scheme.name.to_lowercase().as_str() {
                 n if n.contains("basic") => {
@@ -947,7 +982,7 @@ impl CompressionConfig {
             compression = compression.no_br();
         }
 
-        // Configure gzip  
+        // Configure gzip
         if !self.gzip {
             compression = compression.no_gzip();
         }
@@ -962,7 +997,7 @@ impl CompressionConfig {
 }
 
 /// GZip compression middleware configuration
-/// 
+///
 /// A simplified configuration for GZip compression with minimum size
 /// and content type filtering.
 #[derive(Clone, Debug)]
@@ -1031,9 +1066,9 @@ impl GZipConfig {
         let patterns = Arc::new(self.content_types);
 
         let allow_content_types = move |_status: StatusCode,
-                                       _version: Version,
-                                       headers: &HeaderMap,
-                                       _ext: &Extensions| {
+                                        _version: Version,
+                                        headers: &HeaderMap,
+                                        _ext: &Extensions| {
             let raw = headers
                 .get(header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok())
@@ -1080,6 +1115,8 @@ pub struct MiddlewareBuilder {
     pub compression_config: Option<CompressionConfig>,
     pub gzip_config: Option<GZipConfig>,
     pub rate_limit_config: Option<RateLimitConfig>,
+    pub response_cache_config: Option<ResponseCacheConfig>,
+    pub session_config: Option<SessionConfig>,
 }
 
 impl Default for MiddlewareBuilder {
@@ -1098,6 +1135,8 @@ impl MiddlewareBuilder {
             compression_config: None,
             gzip_config: None,
             rate_limit_config: None,
+            response_cache_config: None,
+            session_config: None,
         }
     }
 
@@ -1131,12 +1170,12 @@ impl MiddlewareBuilder {
     }
 
     /// Enable authentication with HTTP Basic validation
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust
     /// use ultraapi::middleware::MiddlewareBuilder;
-    /// 
+    ///
     /// let builder = MiddlewareBuilder::new()
     ///     .enable_auth_with_basic(vec![
     ///         ("admin".to_string(), "secret123".to_string()),
@@ -1157,7 +1196,8 @@ impl MiddlewareBuilder {
         } else {
             // Create new auth layer with schemes
             self.auth_enabled = true;
-            self.auth_layer = Some(AuthLayer::new(MockAuthValidator::new()).with_security_schemes(schemes));
+            self.auth_layer =
+                Some(AuthLayer::new(MockAuthValidator::new()).with_security_schemes(schemes));
         }
         self
     }
@@ -1184,6 +1224,18 @@ impl MiddlewareBuilder {
         self.rate_limit_config = Some(config);
         self
     }
+
+    /// Enable response caching with the given configuration
+    pub fn response_cache(mut self, config: ResponseCacheConfig) -> Self {
+        self.response_cache_config = Some(config);
+        self
+    }
+
+    /// Enable server-side session cookies
+    pub fn session_cookies(mut self, config: SessionConfig) -> Self {
+        self.session_config = Some(config);
+        self
+    }
 }
 
 // ============================================================================
@@ -1197,14 +1249,241 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+// ============================================================================
+// Response Caching Middleware
+// ============================================================================
+
+use bytes::Bytes;
+
+#[derive(Clone)]
+struct ResponseCacheEntry {
+    status: StatusCode,
+    version: axum::http::Version,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+    expires_at: Instant,
+}
+
+/// レスポンスキャッシュの設定（MVP）
+///
+/// - GET/HEAD の 200 レスポンスを in-memory にキャッシュします
+/// - デフォルトでは Authorization ヘッダーがある場合はキャッシュしません（安全側）
+/// - Cache-Control: no-store が付いたレスポンスは保存しません
+/// - x-cache: HIT|MISS|BYPASS を付与します
+#[derive(Clone, Debug)]
+pub struct ResponseCacheConfig {
+    /// キャッシュ TTL
+    pub ttl: Duration,
+}
+
+impl Default for ResponseCacheConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResponseCacheConfig {
+    pub fn new() -> Self {
+        Self {
+            ttl: Duration::from_secs(60),
+        }
+    }
+
+    pub fn ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    pub fn build(self) -> ResponseCacheMiddleware {
+        ResponseCacheMiddleware::new(self)
+    }
+}
+
+/// In-memory response cache middleware
+#[derive(Clone)]
+pub struct ResponseCacheMiddleware {
+    ttl: Duration,
+    store: Arc<RwLock<HashMap<String, ResponseCacheEntry>>>,
+}
+
+impl ResponseCacheMiddleware {
+    pub fn new(config: ResponseCacheConfig) -> Self {
+        Self {
+            ttl: config.ttl,
+            store: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn cache_key<B>(&self, req: &axum::http::Request<B>) -> String {
+        let method = req.method();
+        let path = req.uri().path();
+        let query = req.uri().query().unwrap_or("");
+        format!("{}:{}?{}", method, path, query)
+    }
+
+    fn cacheable_request<B>(&self, req: &axum::http::Request<B>) -> bool {
+        matches!(*req.method(), Method::GET | Method::HEAD)
+            && !req
+                .headers()
+                .contains_key(axum::http::header::AUTHORIZATION)
+            && !req.headers().contains_key(axum::http::header::COOKIE)
+    }
+
+    fn cacheable_response(&self, res: &axum::http::Response<axum::body::Body>) -> bool {
+        if res.status() != StatusCode::OK {
+            return false;
+        }
+
+        // Never cache responses that set cookies (user/session-specific)
+        if res.headers().contains_key(axum::http::header::SET_COOKIE) {
+            return false;
+        }
+
+        if let Some(cc) = res.headers().get(axum::http::header::CACHE_CONTROL) {
+            if let Ok(s) = cc.to_str() {
+                if s.to_ascii_lowercase().contains("no-store") {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    fn get(&self, key: &str) -> Option<ResponseCacheEntry> {
+        let now = Instant::now();
+        let mut store = self.store.write();
+        if let Some(entry) = store.get(key) {
+            if entry.expires_at > now {
+                return Some(entry.clone());
+            }
+            // expired
+            store.remove(key);
+        }
+        None
+    }
+
+    fn set(&self, key: String, entry: ResponseCacheEntry) {
+        let mut store = self.store.write();
+        store.insert(key, entry);
+    }
+}
+
+impl<S> tower::Layer<S> for ResponseCacheMiddleware {
+    type Service = ResponseCacheService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        ResponseCacheService {
+            inner,
+            middleware: self.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct ResponseCacheService<S> {
+    inner: S,
+    middleware: ResponseCacheMiddleware,
+}
+
+impl<S, B> tower::Service<axum::http::Request<B>> for ResponseCacheService<S>
+where
+    S: tower::Service<axum::http::Request<B>, Response = axum::http::Response<axum::body::Body>>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send,
+    S::Error: std::fmt::Debug,
+    B: Send + 'static,
+{
+    type Response = axum::http::Response<axum::body::Body>;
+    type Error = std::convert::Infallible;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: axum::http::Request<B>) -> Self::Future {
+        let middleware = self.middleware.clone();
+        let mut inner = self.inner.clone();
+
+        Box::pin(async move {
+            let cacheable_req = middleware.cacheable_request(&req);
+            let key = if cacheable_req {
+                Some(middleware.cache_key(&req))
+            } else {
+                None
+            };
+
+            if let Some(ref key) = key {
+                if let Some(entry) = middleware.get(key) {
+                    let mut res = axum::http::Response::new(axum::body::Body::from(entry.body));
+                    *res.status_mut() = entry.status;
+                    *res.version_mut() = entry.version;
+                    *res.headers_mut() = entry.headers;
+                    res.headers_mut().insert("x-cache", "HIT".parse().unwrap());
+                    return Ok(res);
+                }
+            }
+
+            let res = inner.call(req).await.unwrap();
+
+            if !cacheable_req {
+                let (mut parts, body) = res.into_parts();
+                parts.headers.insert("x-cache", "BYPASS".parse().unwrap());
+                return Ok(axum::http::Response::from_parts(parts, body));
+            }
+
+            if !middleware.cacheable_response(&res) {
+                let (mut parts, body) = res.into_parts();
+                parts.headers.insert("x-cache", "BYPASS".parse().unwrap());
+                return Ok(axum::http::Response::from_parts(parts, body));
+            }
+
+            let (mut parts, body) = res.into_parts();
+            let bytes = axum::body::to_bytes(body, usize::MAX)
+                .await
+                .unwrap_or_default();
+
+            if let Some(key) = key {
+                let mut store_headers = parts.headers.clone();
+                store_headers.remove("x-cache");
+
+                middleware.set(
+                    key,
+                    ResponseCacheEntry {
+                        status: parts.status,
+                        version: parts.version,
+                        headers: store_headers,
+                        body: bytes.clone(),
+                        expires_at: Instant::now() + middleware.ttl,
+                    },
+                );
+            }
+
+            parts.headers.insert("x-cache", "MISS".parse().unwrap());
+            Ok(axum::http::Response::from_parts(
+                parts,
+                axum::body::Body::from(bytes),
+            ))
+        })
+    }
+}
+
 /// レート制限の設定
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use ultraapi::middleware::RateLimitConfig;
 /// use std::time::Duration;
-/// 
+///
 /// let config = RateLimitConfig::new(10, Duration::from_secs(60));
 /// ```
 #[derive(Clone)]
@@ -1259,11 +1538,13 @@ impl RateLimitMiddleware {
     pub fn check_limit(&self, key: &str) -> Option<axum::response::Response> {
         let now = Instant::now();
         let mut store_guard = self.store.write();
-        
-        let entry = store_guard.entry(key.to_string()).or_insert_with(|| RateLimitEntry {
-            count: 0,
-            window_start: now,
-        });
+
+        let entry = store_guard
+            .entry(key.to_string())
+            .or_insert_with(|| RateLimitEntry {
+                count: 0,
+                window_start: now,
+            });
 
         let elapsed = now.duration_since(entry.window_start);
         if elapsed >= self.window {
@@ -1276,20 +1557,22 @@ impl RateLimitMiddleware {
         if entry.count > self.max_requests {
             let wait_time = self.window - elapsed;
             let retry_after = wait_time.as_secs();
-            
+
             let error_body = serde_json::json!({
                 "error": "Too Many Requests",
                 "details": ["Rate limit exceeded. Please try again later."]
             });
 
-            Some(axum::http::Response::builder()
-                .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
-                .header("content-type", "application/json")
-                .header("x-ratelimit-limit", self.max_requests.to_string())
-                .header("x-ratelimit-remaining", "0")
-                .header("retry-after", retry_after.to_string())
-                .body(axum::body::Body::from(error_body.to_string()))
-                .unwrap())
+            Some(
+                axum::http::Response::builder()
+                    .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                    .header("content-type", "application/json")
+                    .header("x-ratelimit-limit", self.max_requests.to_string())
+                    .header("x-ratelimit-remaining", "0")
+                    .header("retry-after", retry_after.to_string())
+                    .body(axum::body::Body::from(error_body.to_string()))
+                    .unwrap(),
+            )
         } else {
             None
         }
@@ -1317,14 +1600,19 @@ pub struct RateLimitService<S> {
 
 impl<S, B> tower::Service<axum::http::Request<B>> for RateLimitService<S>
 where
-    S: tower::Service<axum::http::Request<B>, Response = axum::http::Response<axum::body::Body>> + Clone + Send + 'static,
+    S: tower::Service<axum::http::Request<B>, Response = axum::http::Response<axum::body::Body>>
+        + Clone
+        + Send
+        + 'static,
     S::Future: Send,
     S::Error: std::fmt::Debug,
     B: Send + 'static,
 {
     type Response = axum::http::Response<axum::body::Body>;
     type Error = std::convert::Infallible;
-    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
 
     fn poll_ready(
         &mut self,
@@ -1339,7 +1627,8 @@ where
 
         Box::pin(async move {
             // Get the rate limit key
-            let key = req.headers()
+            let key = req
+                .headers()
                 .get("x-forwarded-for")
                 .and_then(|h| h.to_str().ok())
                 .and_then(|s| s.split(',').next())
@@ -1353,7 +1642,7 @@ where
 
             // Call inner service
             let res = inner.call(req).await.unwrap();
-            
+
             Ok(res)
         })
     }
@@ -1364,7 +1653,7 @@ where
 // ============================================================================
 
 /// OAuth2 Bearer token extractor for password flow
-/// 
+///
 /// This is UltraAPI's equivalent of FastAPI's `OAuth2PasswordBearer`.
 /// It extracts the Bearer token from the Authorization header.
 ///
@@ -1384,13 +1673,13 @@ where
 pub struct OAuth2PasswordBearer(pub String);
 
 /// OAuth2 Bearer token extractor that returns Option when auto_error=false
-/// 
+///
 /// This variant returns `Option<OAuth2PasswordBearer>` when `auto_error` is false,
 /// allowing the route handler to decide how to handle missing/invalid tokens.
 pub struct OptionalOAuth2PasswordBearer(pub Option<String>);
 
 /// OAuth2 Authorization Code Bearer token extractor
-/// 
+///
 /// Similar to OAuth2PasswordBearer but designed for authorization code flow.
 /// In practice, both flows use the same Bearer token format in the Authorization header.
 #[derive(Clone)]
@@ -1400,7 +1689,7 @@ pub struct OAuth2AuthorizationCodeBearer(pub String);
 pub struct OptionalOAuth2AuthorizationCodeBearer(pub Option<String>);
 
 /// OAuth2 scopes container for runtime validation
-/// 
+///
 /// This struct holds the required scopes for an OAuth2-protected endpoint.
 /// It can be used for runtime scope validation.
 #[derive(Clone, Debug, Default)]
@@ -1436,13 +1725,13 @@ impl OAuth2Scopes {
 }
 
 /// Parse Bearer token from Authorization header value
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `auth_header` - The Authorization header value (e.g., "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
-/// 
+///
 /// # Returns
-/// 
+///
 /// * `Some(token)` - Valid Bearer token
 /// * `None` - Invalid format (not Bearer, not properly formatted, etc.)
 pub fn parse_bearer_token(auth_header: &str) -> Option<String> {
@@ -1450,28 +1739,31 @@ pub fn parse_bearer_token(auth_header: &str) -> Option<String> {
     if parts.len() != 2 {
         return None;
     }
-    
+
     let scheme = parts[0].to_lowercase();
     if scheme != "bearer" {
         return None;
     }
-    
+
     let token = parts[1].to_string();
     if token.is_empty() {
         return None;
     }
-    
+
     Some(token)
 }
 
 /// Create an unauthorized error response for OAuth2/Bearer authentication
-/// 
+///
 /// This follows RFC 6750 for Bearer token authentication errors.
 /// The error response includes the `WWW-Authenticate` header.
-pub fn create_bearer_unauthorized_error(error: &str, error_description: Option<&str>) -> crate::ApiError {
+pub fn create_bearer_unauthorized_error(
+    error: &str,
+    error_description: Option<&str>,
+) -> crate::ApiError {
     let details = error_description.unwrap_or(error);
     let api_error = crate::ApiError::unauthorized(details);
-    
+
     // Add WWW-Authenticate header (RFC 6750)
     // Note: ApiError doesn't currently support custom headers directly
     // The header will be added by the auth middleware if configured
@@ -1480,14 +1772,11 @@ pub fn create_bearer_unauthorized_error(error: &str, error_description: Option<&
     } else {
         format!("Bearer error=\"{}\"", error)
     };
-    
+
     api_error
 }
 
-use axum::{
-    extract::FromRequestParts,
-    http::request::Parts,
-};
+use axum::{extract::FromRequestParts, http::request::Parts};
 
 impl<S> FromRequestParts<S> for OAuth2PasswordBearer
 where
@@ -1511,7 +1800,9 @@ where
                     // Invalid format (not Bearer or empty token)
                     Err(create_bearer_unauthorized_error(
                         "invalid_token",
-                        Some("Invalid or malformed Authorization header. Expected 'Bearer <token>'"),
+                        Some(
+                            "Invalid or malformed Authorization header. Expected 'Bearer <token>'",
+                        ),
                     ))
                 }
             }
@@ -1573,16 +1864,16 @@ where
                 } else {
                     Err(create_bearer_unauthorized_error(
                         "invalid_token",
-                        Some("Invalid or malformed Authorization header. Expected 'Bearer <token>'"),
+                        Some(
+                            "Invalid or malformed Authorization header. Expected 'Bearer <token>'",
+                        ),
                     ))
                 }
             }
-            None => {
-                Err(create_bearer_unauthorized_error(
-                    "invalid_token",
-                    Some("Missing Authorization header. Expected 'Bearer <token>'"),
-                ))
-            }
+            None => Err(create_bearer_unauthorized_error(
+                "invalid_token",
+                Some("Missing Authorization header. Expected 'Bearer <token>'"),
+            )),
         }
     }
 }
@@ -1604,21 +1895,19 @@ where
                 let token = parse_bearer_token(header_value);
                 Ok(OptionalOAuth2AuthorizationCodeBearer(token))
             }
-            None => {
-                Ok(OptionalOAuth2AuthorizationCodeBearer(None))
-            }
+            None => Ok(OptionalOAuth2AuthorizationCodeBearer(None)),
         }
     }
 }
 
 /// Extension trait for OAuth2 dependency objects to support auto_error configuration
-/// 
+///
 /// Note: In UltraAPI, auto_error is handled at the dependency level by providing
 /// both required (auto_error=true) and optional (auto_error=false) variants.
 pub trait OAuth2Dependency: Send + Sync {
     /// The security scheme name for OpenAPI
     fn security_scheme_name(&self) -> &str;
-    
+
     /// Required scopes for this dependency
     fn scopes(&self) -> &[String];
 }
@@ -1627,7 +1916,7 @@ impl OAuth2Dependency for OAuth2PasswordBearer {
     fn security_scheme_name(&self) -> &str {
         "oauth2Password"
     }
-    
+
     fn scopes(&self) -> &[String] {
         &[]
     }
@@ -1637,7 +1926,7 @@ impl OAuth2Dependency for OptionalOAuth2PasswordBearer {
     fn security_scheme_name(&self) -> &str {
         "oauth2Password"
     }
-    
+
     fn scopes(&self) -> &[String] {
         &[]
     }
@@ -1647,7 +1936,7 @@ impl OAuth2Dependency for OAuth2AuthorizationCodeBearer {
     fn security_scheme_name(&self) -> &str {
         "oauth2AuthCode"
     }
-    
+
     fn scopes(&self) -> &[String] {
         &[]
     }
@@ -1657,7 +1946,7 @@ impl OAuth2Dependency for OptionalOAuth2AuthorizationCodeBearer {
     fn security_scheme_name(&self) -> &str {
         "oauth2AuthCode"
     }
-    
+
     fn scopes(&self) -> &[String] {
         &[]
     }
@@ -1668,7 +1957,7 @@ impl OAuth2Dependency for OptionalOAuth2AuthorizationCodeBearer {
 // ============================================================================
 
 /// OAuth2 パスワードフローで使用されるリクエストフォーム
-/// 
+///
 /// FastAPI の `OAuth2PasswordRequestForm` に相当します。
 /// `/token` エンドポイントで Form データとして受け取ります。
 ///
@@ -1714,13 +2003,16 @@ pub struct OAuth2PasswordRequestForm {
 
 impl OAuth2PasswordRequestForm {
     /// スコープをベクターに変換
-    /// 
+    ///
     /// スペース区切りのスコープ文字列を Vec<String> に変換します。
     pub fn scopes(&self) -> Vec<String> {
         if self.scope.is_empty() {
             return vec![];
         }
-        self.scope.split_whitespace().map(|s| s.to_string()).collect()
+        self.scope
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// グラントタイプが "password" かどうかを確認
@@ -1730,7 +2022,7 @@ impl OAuth2PasswordRequestForm {
 }
 
 /// OAuth2 トークンレスポンス
-/// 
+///
 /// 成功時のトークン発行レスポンスです。
 /// FastAPI の `Token` モデルに相当します。
 ///
@@ -1801,7 +2093,7 @@ impl TokenResponse {
 }
 
 /// OAuth2 エラーレスポンス
-/// 
+///
 /// RFC 6749 に準拠したエラーレスポンスです。
 ///
 /// # Fields
@@ -1901,7 +2193,7 @@ impl OAuth2ErrorResponse {
 }
 
 /// 認証エラー
-/// 
+///
 /// トークン検証時に発生するエラーを表します。
 #[derive(Clone, Debug)]
 pub enum OAuth2AuthError {
@@ -1926,7 +2218,11 @@ impl std::fmt::Display for OAuth2AuthError {
             OAuth2AuthError::InvalidToken(msg) => write!(f, "Invalid token: {}", msg),
             OAuth2AuthError::ExpiredToken => write!(f, "Token has expired"),
             OAuth2AuthError::InsufficientScope { required, provided } => {
-                write!(f, "Insufficient scope: required {:?}, provided {:?}", required, provided)
+                write!(
+                    f,
+                    "Insufficient scope: required {:?}, provided {:?}",
+                    required, provided
+                )
             }
             OAuth2AuthError::TokenNotFound => write!(f, "Token not found"),
             OAuth2AuthError::Other(msg) => write!(f, "{}", msg),
@@ -1946,7 +2242,7 @@ impl serde::Serialize for OAuth2AuthError {
 }
 
 /// トークンデータ
-/// 
+///
 /// 検証されたトークンに含まれる情報を保持します。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TokenData {
@@ -1987,7 +2283,7 @@ impl TokenData {
 }
 
 /// OAuth2 トークンバリデーター trait
-/// 
+///
 /// トークン検証ロジックを実装するためのインターフェースです。
 /// 独自のバリデーターを実装して使用します。
 ///
@@ -2009,25 +2305,29 @@ impl TokenData {
 #[async_trait::async_trait]
 pub trait OAuth2TokenValidator: Send + Sync {
     /// トークンを検証し、TokenData を返す
-    /// 
+    ///
     /// # Arguments
     /// * `token` - 検証対象のトークン文字列
-    /// 
+    ///
     /// # Returns
     /// * `Ok(TokenData)` - 検証成功
     /// * `Err(OAuth2AuthError)` - 検証失敗
     async fn validate(&self, token: &str) -> Result<TokenData, OAuth2AuthError>;
 
     /// オプション: スコープを検証
-    /// 
+    ///
     /// デフォルト実装は常に成功します。
-    fn validate_scopes(&self, _token_data: &TokenData, _required: &[String]) -> Result<(), OAuth2AuthError> {
+    fn validate_scopes(
+        &self,
+        _token_data: &TokenData,
+        _required: &[String],
+    ) -> Result<(), OAuth2AuthError> {
         Ok(())
     }
 }
 
 /// 不透明トークンバリデーター（Opaque Token Validator）
-/// 
+///
 /// HashMap にトークンをマッピングするシンプルな実装です。
 /// 本番環境ではデータベースや Redis などを使用してください。
 ///
@@ -2059,7 +2359,7 @@ impl OpaqueTokenValidator {
     }
 
     /// トークンを追加
-    /// 
+    ///
     /// # Arguments
     /// * `token` - トークン文字列
     /// * `sub` - subject（ユーザーIDなど）
@@ -2096,7 +2396,11 @@ impl OpaqueTokenValidator {
     }
 
     /// スコープ検証
-    fn check_scopes(&self, provided: &[String], required: &[String]) -> Result<(), OAuth2AuthError> {
+    fn check_scopes(
+        &self,
+        provided: &[String],
+        required: &[String],
+    ) -> Result<(), OAuth2AuthError> {
         for req in required {
             if !provided.contains(req) {
                 return Err(OAuth2AuthError::InsufficientScope {
@@ -2119,20 +2423,24 @@ impl Default for OpaqueTokenValidator {
 impl OAuth2TokenValidator for OpaqueTokenValidator {
     async fn validate(&self, token: &str) -> Result<TokenData, OAuth2AuthError> {
         let token_data = self.tokens.get(token);
-        
+
         match token_data {
             Some((sub, scopes)) => Ok(TokenData::new(sub.clone(), scopes.clone())),
             None => Err(OAuth2AuthError::TokenNotFound),
         }
     }
 
-    fn validate_scopes(&self, token_data: &TokenData, required: &[String]) -> Result<(), OAuth2AuthError> {
+    fn validate_scopes(
+        &self,
+        token_data: &TokenData,
+        required: &[String],
+    ) -> Result<(), OAuth2AuthError> {
         self.check_scopes(&token_data.scopes, required)
     }
 }
 
 /// Bearer 認証エラー応答を作成する（ApiError 形式）
-/// 
+///
 /// 認証失敗時に ApiError 形式のレスポンスを作成します。
 /// WWW-Authenticate ヘッダも付与します（RFC 6750 対応）。
 ///

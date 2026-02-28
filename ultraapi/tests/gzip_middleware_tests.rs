@@ -34,7 +34,10 @@ async fn spawn_app_with_gzip(config: ultraapi::middleware::GZipConfig) -> String
         .version("0.1.0")
         .gzip_config(config)
         .into_router()
-        .route("/gzip/already", axum::routing::get(gzip_already_encoded_handler));
+        .route(
+            "/gzip/already",
+            axum::routing::get(gzip_already_encoded_handler),
+        );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -118,7 +121,8 @@ async fn test_gzip_applied_with_accept_encoding_gzip() {
 
 #[tokio::test]
 async fn test_gzip_respects_minimum_size() {
-    let base = spawn_app_with_gzip(ultraapi::middleware::GZipConfig::new().minimum_size(1024)).await;
+    let base =
+        spawn_app_with_gzip(ultraapi::middleware::GZipConfig::new().minimum_size(1024)).await;
 
     let client = reqwest::Client::builder()
         .gzip(false)
