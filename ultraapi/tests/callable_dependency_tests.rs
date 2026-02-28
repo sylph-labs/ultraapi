@@ -8,7 +8,6 @@
 
 use std::any::TypeId;
 use std::sync::Arc;
-use ultraapi::prelude::*;
 use ultraapi::{AppState, DependencyError, DependsResolver, UltraApiApp};
 
 /// Test: callable dependency receiving another dependency
@@ -16,11 +15,13 @@ use ultraapi::{AppState, DependencyError, DependsResolver, UltraApiApp};
 async fn test_callable_dependency_receiving_dep() {
     // Setup: Create app with base dependency
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct DbPool {
         connection_string: String,
     }
 
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct UserRepository {
         pool: Arc<DbPool>,
     }
@@ -53,16 +54,19 @@ async fn test_callable_dependency_receiving_dep() {
 #[tokio::test]
 async fn test_multi_level_dependency_chain() {
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct DbPool {
         connection_string: String,
     }
 
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct UserRepository {
         pool: Arc<DbPool>,
     }
 
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct UserService {
         repo: Arc<UserRepository>,
     }
@@ -104,13 +108,14 @@ async fn test_multi_level_dependency_chain() {
 #[tokio::test]
 async fn test_legacy_appstate_function_still_works() {
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct Config {
         value: String,
     }
 
     // Traditional dependency function that takes AppState
     // The function should return the dependency value
-    async fn get_config(state: AppState) -> Result<Config, DependencyError> {
+    async fn get_config(_state: AppState) -> Result<Config, DependencyError> {
         // state.get returns Option<Arc<T>>, we need to handle this
         // For this test, we just return a Config directly
         Ok(Config {
@@ -129,11 +134,13 @@ async fn test_legacy_appstate_function_still_works() {
 #[tokio::test]
 async fn test_depends_with_deps_api() {
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct ServiceA {
         value: i32,
     }
 
     #[derive(Clone)]
+    #[allow(dead_code)]
     struct ServiceB {
         a: Arc<ServiceA>,
     }

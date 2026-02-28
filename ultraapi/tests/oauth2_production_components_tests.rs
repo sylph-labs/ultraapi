@@ -1,7 +1,6 @@
 // OAuth2 Production Components Tests
 // Tests for OAuth2 types used in production (/token endpoint, validators)
 
-use axum::extract::Form;
 use axum::http::StatusCode;
 use ultraapi::prelude::*;
 
@@ -424,7 +423,7 @@ async fn test_token_endpoint_example() {
     // This test demonstrates a complete token endpoint implementation
 
     // Setup validator with test tokens
-    let validator = OpaqueTokenValidator::new().add_token(
+    let _validator = OpaqueTokenValidator::new().add_token(
         "user_pass_valid",
         "user1",
         vec!["read".to_string(), "write".to_string()],

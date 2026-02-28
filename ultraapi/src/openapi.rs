@@ -27,6 +27,7 @@ pub struct Server {
 /// Represents the type of security scheme
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum SecuritySchemeType {
     Http {
         #[serde(rename = "bearerFormat", skip_serializing_if = "Option::is_none")]
@@ -184,7 +185,6 @@ pub struct SecuritySchemeDef {
 
 /// Legacy SecurityScheme struct - for backward compatibility
 /// Note: This is kept for migration purposes but new code should use SecurityScheme enum
-
 /// Legacy SecurityScheme struct - now acts as a builder-friendly interface
 #[derive(Debug, Clone, Serialize)]
 pub struct SecuritySchemeLegacy {
@@ -939,6 +939,7 @@ fn schema_write_only(schema: &schemars::schema::Schema) -> bool {
 }
 
 /// Extract deprecated flag from schemars schema metadata
+#[allow(dead_code)]
 fn schema_deprecated(schema: &schemars::schema::Schema) -> bool {
     match schema {
         schemars::schema::Schema::Object(obj) => {

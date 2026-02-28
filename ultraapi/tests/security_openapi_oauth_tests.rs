@@ -228,23 +228,25 @@ async fn test_oauth2_authorization_code_flow_serialization() {
 async fn test_oauth2_multiple_flows_serialization() {
     use ultraapi::openapi::{OAuth2Flow, OAuth2Flows};
 
-    let mut flows = OAuth2Flows::default();
-    flows.authorization_code = Some(OAuth2Flow {
-        authorization_url: Some("https://example.com/authorize".to_string()),
-        token_url: Some("https://example.com/token".to_string()),
-        refresh_url: Some("https://example.com/refresh".to_string()),
-        scopes: [
-            ("read".to_string(), "Read access".to_string()),
-            ("write".to_string(), "Write access".to_string()),
-        ]
-        .into(),
-    });
-    flows.client_credentials = Some(OAuth2Flow {
-        authorization_url: None,
-        token_url: Some("https://example.com/token".to_string()),
-        refresh_url: None,
-        scopes: [("server".to_string(), "Server access".to_string())].into(),
-    });
+    let flows = OAuth2Flows {
+        authorization_code: Some(OAuth2Flow {
+            authorization_url: Some("https://example.com/authorize".to_string()),
+            token_url: Some("https://example.com/token".to_string()),
+            refresh_url: Some("https://example.com/refresh".to_string()),
+            scopes: [
+                ("read".to_string(), "Read access".to_string()),
+                ("write".to_string(), "Write access".to_string()),
+            ]
+            .into(),
+        }),
+        client_credentials: Some(OAuth2Flow {
+            authorization_url: None,
+            token_url: Some("https://example.com/token".to_string()),
+            refresh_url: None,
+            scopes: [("server".to_string(), "Server access".to_string())].into(),
+        }),
+        ..Default::default()
+    };
 
     let app = UltraApiApp::new()
         .title("OAuth2 Multi Flow Test")
@@ -578,13 +580,15 @@ async fn test_route_security_with_specific_scopes() {
 async fn test_raw_security_scheme_builder() {
     use ultraapi::openapi::{OAuth2Flow, OAuth2Flows, SecurityScheme};
 
-    let mut flows = OAuth2Flows::default();
-    flows.password = Some(OAuth2Flow {
-        authorization_url: None,
-        token_url: Some("https://example.com/token".to_string()),
-        refresh_url: Some("https://example.com/refresh".to_string()),
-        scopes: [("admin".to_string(), "Admin access".to_string())].into(),
-    });
+    let flows = OAuth2Flows {
+        password: Some(OAuth2Flow {
+            authorization_url: None,
+            token_url: Some("https://example.com/token".to_string()),
+            refresh_url: Some("https://example.com/refresh".to_string()),
+            scopes: [("admin".to_string(), "Admin access".to_string())].into(),
+        }),
+        ..Default::default()
+    };
 
     let app = UltraApiApp::new()
         .title("Raw Security Scheme Test")

@@ -229,6 +229,7 @@ impl SessionStore {
 #[derive(Clone)]
 struct SessionRequestState {
     id: String,
+    #[allow(dead_code)]
     is_new: bool,
     /// 0 = clean, 1 = modified, 2 = cleared
     action: Arc<AtomicU8>,

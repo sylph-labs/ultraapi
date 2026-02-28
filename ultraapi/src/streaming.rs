@@ -97,7 +97,6 @@ where
     R: AsyncRead + Send + Unpin + 'static,
 {
     // Use try_unfold to convert AsyncRead to a Stream
-    let chunk_size = chunk_size;
     futures_util::stream::try_unfold(reader, move |mut reader| async move {
         let mut buf = vec![0u8; chunk_size];
         match reader.read(&mut buf).await {
@@ -128,7 +127,6 @@ pub fn reader_stream_infallible<R>(
 where
     R: AsyncRead + Send + Unpin + 'static,
 {
-    let chunk_size = chunk_size;
     futures_util::stream::try_unfold(reader, move |mut reader| async move {
         let mut buf = vec![0u8; chunk_size];
         match reader.read(&mut buf).await {
@@ -209,7 +207,7 @@ impl StreamingResponse {
 /// }
 /// ```
 pub fn bytes_stream(chunks: Vec<Bytes>) -> impl tokio_stream::Stream<Item = Bytes> + Send {
-    tokio_stream::iter(chunks.into_iter())
+    tokio_stream::iter(chunks)
 }
 
 /// イテータブルからストリームを作成します
@@ -246,7 +244,7 @@ where
 /// 文字列のイテータから HTTP レスポンス用のストリームを作成します。
 /// 各文字列は改行で区切られます。
 pub fn string_stream(strings: Vec<String>) -> impl tokio_stream::Stream<Item = Bytes> + Send {
-    iter_stream(strings, |s| Bytes::from(s))
+    iter_stream(strings, Bytes::from)
 }
 
 /// テキストファイルの行ごとのストリームを作成します
@@ -358,8 +356,7 @@ mod tests {
         // Should have multiple chunks
         let combined: Vec<u8> = collected
             .into_iter()
-            .map(|r| r.unwrap().to_vec())
-            .flatten()
+            .flat_map(|r| r.unwrap().to_vec())
             .collect();
 
         assert_eq!(combined, b"1234567890");

@@ -1,4 +1,6 @@
 // Tests for custom exception handlers (global error handling)
+#![allow(clippy::assertions_on_constants)]
+
 use axum::{
     body::Body, http::Request, http::StatusCode, response::IntoResponse, routing::get, Router,
 };
@@ -37,7 +39,6 @@ async fn service_unavailable_route() -> Result<(), ApiError> {
 #[tokio::test]
 async fn test_raw_router_middleware_transforms_error() {
     // Verify that axum middleware from_fn actually transforms error responses
-    use axum::body::to_bytes;
 
     let app = Router::new()
         .route(
@@ -72,10 +73,8 @@ async fn test_raw_router_middleware_transforms_error() {
 #[tokio::test]
 async fn test_raw_router_with_state_and_middleware() {
     // Test that middleware works when state is added after middleware
-    use axum::body::to_bytes;
-
-    // Create a simple state
     #[derive(Clone, Debug)]
+    #[allow(dead_code)]
     struct TestState {
         value: i32,
     }
@@ -117,7 +116,6 @@ async fn test_raw_router_with_state_and_middleware() {
 #[tokio::test]
 async fn test_raw_router_add_route_after_with_state() {
     // Test adding routes after with_state is called
-    use axum::body::to_bytes;
 
     let state = ();
 

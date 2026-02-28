@@ -365,8 +365,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         let after_eq = &after_ct[eq_pos + 1..];
                         // Find the end of the string value (next comma, closing paren, or end)
                         let end_pos = after_eq
-                            .find(|c: char| c == ',' || c == ')')
-                            .map(|p| p)
+                            .find(|c: char| [',', ')'].contains(&c))
                             .unwrap_or(after_eq.len());
                         let ct_value = after_eq[..end_pos].trim().trim_matches('"').trim();
                         if !ct_value.is_empty() {
@@ -1155,17 +1154,9 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         None => quote! { None },
     };
 
-    // Generate conditional scope creation based on whether there are generator dependencies
-    let scope_creation = if has_generator_deps {
-        quote! {
-            // Create shared dependency scope for cleanup tracking (yield-based dependencies)
-            let dep_scope = std::sync::Arc::new(ultraapi::DependencyScope::new());
-        }
-    } else {
-        quote! {
-            // No generator dependencies - create dummy scope for compatibility
-            let dep_scope = std::sync::Arc::new(ultraapi::DependencyScope::new());
-        }
+    // Generate scope creation (same for both cases - compatibility)
+    let scope_creation = quote! {
+        let dep_scope = std::sync::Arc::new(ultraapi::DependencyScope::new());
     };
 
     // Generate cleanup wrapping around response

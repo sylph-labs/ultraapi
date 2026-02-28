@@ -430,6 +430,7 @@ pub enum Scope {
 /// For type-erased usage in DependsResolver (internal)
 /// Uses boxed futures to be dyn-compatible
 #[async_trait::async_trait]
+#[allow(clippy::type_complexity)]
 pub trait DynGenerator: Send + Sync + 'static {
     /// Generate the dependency value
     fn generate(
@@ -592,6 +593,7 @@ impl<G: Generator> YieldDep<G> {
 
 /// Request-level state for tracking yield dependency cleanup hooks
 #[derive(Clone, Default)]
+#[allow(clippy::type_complexity)]
 pub struct DependencyScope {
     /// Function-scoped cleanup hooks (run before response)
     function_hooks: Arc<parking_lot::Mutex<Vec<Box<dyn FnOnce() + Send + Sync>>>>,
@@ -708,6 +710,7 @@ impl<T: 'static + Send + Sync> std::ops::Deref for Depends<T> {
 }
 
 /// Internal: Wrapper for dependency functions that stores metadata
+#[allow(clippy::type_complexity)]
 struct DependsFunc {
     name: &'static str,
     // Store the function using type erasure with Arc
@@ -857,6 +860,7 @@ impl DependsResolver {
     }
 
     /// Register a dependency function
+    #[allow(clippy::type_complexity)]
     pub fn register<T, F, R>(&self, _marker: std::marker::PhantomData<T>, func: F)
     where
         T: Send + Sync + 'static,
@@ -911,6 +915,7 @@ impl DependsResolver {
         self.resolve_recursive::<T>(state, &mut visiting).await
     }
 
+    #[allow(clippy::await_holding_lock)]
     async fn resolve_recursive<T: 'static + Send + Sync>(
         &self,
         state: &AppState,
@@ -1117,7 +1122,7 @@ impl IntoResponse for ApiError {
 
 /// Route information collected by proc macros
 /// Response model shaping options for FastAPI-like response_model control
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ResponseModelOptions {
     /// Fields to include in the response (takes precedence over exclude)
     pub include: Option<&'static [&'static str]>,
@@ -1129,22 +1134,12 @@ pub struct ResponseModelOptions {
     pub content_type: Option<&'static str>,
 }
 
-impl Default for ResponseModelOptions {
-    fn default() -> Self {
-        ResponseModelOptions {
-            include: None,
-            exclude: None,
-            by_alias: false,
-            content_type: None,
-        }
-    }
-}
-
 /// Response class types for specifying different response content types
 /// Similar to FastAPI's response_class parameter
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum ResponseClass {
     /// Default JSON response (application/json)
+    #[default]
     Json,
     /// HTML response (text/html)
     Html,
@@ -1160,12 +1155,6 @@ pub enum ResponseClass {
     File,
     /// Redirect response (text/html with Location header)
     Redirect,
-}
-
-impl Default for ResponseClass {
-    fn default() -> Self {
-        ResponseClass::Json
-    }
 }
 
 impl ResponseClass {
@@ -1395,6 +1384,7 @@ impl IntoResponse for RedirectResponse {
 ///         .content_type("text/plain")
 /// }
 /// ```
+#[allow(clippy::type_complexity)]
 pub struct StreamingResponse {
     stream: Option<
         Pin<
@@ -1725,7 +1715,7 @@ impl ResponseModelOptions {
         by_alias: bool,
     ) -> serde_json::Value {
         // Get alias mapping if type_name provided
-        let aliases = type_name.and_then(|tn| get_field_aliases(tn));
+        let aliases = type_name.and_then(get_field_aliases);
 
         // Build reverse mapping (alias -> field_name)
         let reverse_aliases: std::collections::HashMap<String, String> = aliases
@@ -1755,13 +1745,9 @@ impl ResponseModelOptions {
                     // Step 2: Apply include/exclude using field names
                     let should_include = match (&self.include, &self.exclude) {
                         // If include is specified, only include those fields
-                        (Some(include_list), _) => {
-                            include_list.iter().any(|f| *f == field_name.as_str())
-                        }
+                        (Some(include_list), _) => include_list.contains(&field_name.as_str()),
                         // If only exclude is specified, exclude listed fields
-                        (None, Some(exclude_list)) => {
-                            !exclude_list.iter().any(|f| *f == field_name.as_str())
-                        }
+                        (None, Some(exclude_list)) => !exclude_list.contains(&field_name.as_str()),
                         // No filtering
                         (None, None) => true,
                     };
@@ -2522,8 +2508,10 @@ impl UltraApiApp {
             refresh_url: None,
             scopes: scope_map,
         };
-        let mut flows = openapi::OAuth2Flows::default();
-        flows.implicit = Some(flow);
+        let flows = openapi::OAuth2Flows {
+            implicit: Some(flow),
+            ..Default::default()
+        };
         self.security_schemes
             .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self
@@ -2561,8 +2549,10 @@ impl UltraApiApp {
             refresh_url: None,
             scopes: scope_map,
         };
-        let mut flows = openapi::OAuth2Flows::default();
-        flows.password = Some(flow);
+        let flows = openapi::OAuth2Flows {
+            password: Some(flow),
+            ..Default::default()
+        };
         self.security_schemes
             .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self
@@ -2600,8 +2590,10 @@ impl UltraApiApp {
             refresh_url: None,
             scopes: scope_map,
         };
-        let mut flows = openapi::OAuth2Flows::default();
-        flows.client_credentials = Some(flow);
+        let flows = openapi::OAuth2Flows {
+            client_credentials: Some(flow),
+            ..Default::default()
+        };
         self.security_schemes
             .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self
@@ -2641,8 +2633,10 @@ impl UltraApiApp {
             refresh_url: None,
             scopes: scope_map,
         };
-        let mut flows = openapi::OAuth2Flows::default();
-        flows.authorization_code = Some(flow);
+        let flows = openapi::OAuth2Flows {
+            authorization_code: Some(flow),
+            ..Default::default()
+        };
         self.security_schemes
             .insert(name.to_string(), openapi::SecurityScheme::OAuth2(flows));
         self

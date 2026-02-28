@@ -1,11 +1,11 @@
 // Tests for input/output schema separation feature
 // This tests the read_only and write_only field attributes
 
-use ultraapi::openapi::*;
 use ultraapi::prelude::*;
 
 // Test model with write_only field (field appears in request but not in response)
 #[api_model]
+#[allow(dead_code)]
 struct UserWithPassword {
     /// User ID (only in response)
     id: i64,

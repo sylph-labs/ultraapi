@@ -483,7 +483,7 @@ impl InProcessTestClient {
     /// # Returns
     ///
     /// An InProcessTestClient instance
-    pub fn new_in_process(mut app: UltraApiApp) -> Self {
+    pub fn new_in_process(app: UltraApiApp) -> Self {
         let (router, runner) = app.into_router_with_lifespan();
 
         // Run startup hooks synchronously
@@ -674,7 +674,7 @@ impl InProcessTestClient {
         let headers = response.headers().clone();
 
         // Collect the body
-        let body = Body::from(response.into_body());
+        let body = response.into_body();
         let body_bytes = to_bytes(body, usize::MAX)
             .await
             .expect("Failed to read response body")
@@ -727,6 +727,7 @@ impl std::fmt::Debug for InProcessTestClient {
 /// In-process test client with default headers
 pub struct InProcessTestClientWithHeader {
     router: Router,
+    #[allow(dead_code)]
     lifespan_runner: Option<LifespanRunner>,
     default_headers: Vec<(String, String)>,
 }
@@ -799,7 +800,7 @@ impl InProcessTestClientWithHeader {
         let headers = response.headers().clone();
 
         // Collect the body
-        let body = Body::from(response.into_body());
+        let body = response.into_body();
         let body_bytes = to_bytes(body, usize::MAX)
             .await
             .expect("Failed to read response body")

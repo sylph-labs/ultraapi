@@ -562,7 +562,7 @@ async fn test_redirect_status_and_location() {
         .build()
         .unwrap();
     let resp = client
-        .get(&format!("{base}/test-redirect"))
+        .get(format!("{base}/test-redirect"))
         .send()
         .await
         .unwrap();
@@ -587,7 +587,7 @@ async fn test_redirect_301() {
         .build()
         .unwrap();
     let resp = client
-        .get(&format!("{base}/redirect/301"))
+        .get(format!("{base}/redirect/301"))
         .send()
         .await
         .unwrap();
@@ -611,7 +611,7 @@ async fn test_redirect_302() {
         .build()
         .unwrap();
     let resp = client
-        .get(&format!("{base}/redirect/302"))
+        .get(format!("{base}/redirect/302"))
         .send()
         .await
         .unwrap();

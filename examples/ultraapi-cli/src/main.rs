@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn test_cli_parse_run() {
-        let cli = Cli::parse_from(&[
+        let cli = Cli::parse_from([
             "ultraapi",
             "run",
             "myapp",
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_cli_parse_dev() {
-        let cli = Cli::parse_from(&["ultraapi", "dev", "myapp", "--port", "4000"]);
+        let cli = Cli::parse_from(["ultraapi", "dev", "myapp", "--port", "4000"]);
         match cli.command {
             Commands::Dev {
                 app_module,
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn test_cli_defaults() {
-        let cli = Cli::parse_from(&["ultraapi", "run", "myapp"]);
+        let cli = Cli::parse_from(["ultraapi", "run", "myapp"]);
         match cli.command {
             Commands::Run {
                 app_module,
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn test_cli_verbose() {
-        let cli = Cli::parse_from(&["ultraapi", "-v", "run", "myapp"]);
+        let cli = Cli::parse_from(["ultraapi", "-v", "run", "myapp"]);
         assert!(cli.verbose);
     }
 }

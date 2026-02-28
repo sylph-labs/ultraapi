@@ -417,8 +417,6 @@ async fn test_oauth2_auth_code_in_openapi_spec() {
 
 #[tokio::test]
 async fn test_oauth2_error_response_format() {
-    use ultraapi::middleware::OAuth2PasswordBearer;
-
     // Test that error response contains the expected format
     // The error should be in ApiError format
     let app = UltraApiApp::new()

@@ -16,6 +16,7 @@ use ultraapi::{AppState, DependencyError, Scope, UltraApiApp};
 // =============================================================================
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct TestResource {
     value: String,
 }
@@ -119,6 +120,7 @@ fn test_default_scope_is_function() {
 // =============================================================================
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct LegacyService {
     value: i32,
 }
@@ -143,6 +145,7 @@ fn test_backward_compatibility_with_depends() {
 // =============================================================================
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct YieldsResource {
     id: &'static str,
 }
@@ -191,6 +194,7 @@ fn test_combined_yield_depends_and_depends() {
 // =============================================================================
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct TrackedResource {
     id: &'static str,
     initialized: Arc<AtomicBool>,
@@ -202,7 +206,7 @@ impl Generator for TrackedResource {
     type Output = Self;
     type Error = DependencyError;
 
-    async fn generate(self: Arc<Self>, scope: Scope) -> Result<Self::Output, Self::Error> {
+    async fn generate(self: Arc<Self>, _scope: Scope) -> Result<Self::Output, Self::Error> {
         self.initialized.store(true, Ordering::SeqCst);
         Ok(Arc::try_unwrap(self).unwrap_or_else(|a| (*a).clone()))
     }
@@ -238,6 +242,7 @@ fn test_generator_cleanup_tracking() {
 // =============================================================================
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct ResourceA {
     name: &'static str,
     order: Arc<AtomicUsize>,
@@ -259,6 +264,7 @@ impl Generator for ResourceA {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct ResourceB {
     name: &'static str,
     order: Arc<AtomicUsize>,

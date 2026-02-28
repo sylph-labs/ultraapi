@@ -14,6 +14,7 @@ use ultraapi::{AppState, DependencyError};
 // ---- Test 1: Simple function dependency registration ----
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct SimpleService {
     value: i32,
 }
@@ -34,11 +35,13 @@ fn test_simple_function_dependency_registration() {
 // ---- Test 2: Nested dependency chain ----
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct DatabasePool {
     connection_string: String,
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct UserRepository {
     pool: Arc<DatabasePool>,
 }
@@ -181,6 +184,7 @@ async fn test_regular_dep_backward_compatibility() {
 // ---- Test 7: Multiple function deps ----
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct Counter {
     count: i32,
 }

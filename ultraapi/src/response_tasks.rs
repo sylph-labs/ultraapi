@@ -13,6 +13,7 @@ use tokio::runtime::Handle;
 /// この型をハンドラのパラメータとして注入することで、レスポンス送信後に
 /// 実行されるタスクを追加できます。
 #[derive(Clone)]
+#[allow(clippy::type_complexity, clippy::arc_with_non_send_sync)]
 pub struct BackgroundTasks {
     /// 内部でタスクを保持する (parking_lot RwLock はSync)
     tasks: Arc<SyncRwLock<Vec<Box<dyn FnOnce() + Send + 'static>>>>,
@@ -23,6 +24,7 @@ pub struct BackgroundTasks {
 unsafe impl Send for BackgroundTasks {}
 unsafe impl Sync for BackgroundTasks {}
 
+#[allow(clippy::arc_with_non_send_sync)]
 impl BackgroundTasks {
     /// 新しいBackgroundTasksインスタンスを作成
     pub fn new() -> Self {

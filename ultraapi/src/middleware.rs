@@ -1705,6 +1705,7 @@ impl OAuth2Scopes {
     }
 
     /// Create from an iterator of scope strings
+    #[allow(clippy::should_implement_trait)]
     pub fn from_iter<I>(iter: I) -> Self
     where
         I: IntoIterator,

@@ -35,6 +35,7 @@ struct UpdateItem {
 }
 
 #[derive(ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
+#[allow(dead_code)]
 struct PaginationQuery {
     #[serde(default)]
     page: Option<i64>,
@@ -102,6 +103,7 @@ async fn list_items(query: Query<PaginationQuery>) -> ListResponse {
 /// Delete item by ID
 #[delete("/items/{id}")]
 #[tag("items")]
+#[allow(unused_variables)]
 async fn delete_item(id: i64) -> Result<(), ApiError> {
     Ok(())
 }
