@@ -2,8 +2,8 @@
 //
 // These tests document how to integrate a JWT-like validator with AuthLayer.
 
-use ultraapi::prelude::*;
 use ultraapi::middleware::{AuthError, AuthValidator, Credentials, SecuritySchemeConfig};
+use ultraapi::prelude::*;
 
 #[get("/jwt-protected")]
 #[security("bearer")]
@@ -119,7 +119,8 @@ async fn test_jwt_validator_scope_forbidden_returns_403() {
             builder
                 .enable_auth_with_validator(DemoJwtValidator)
                 .with_security_scheme(
-                    SecuritySchemeConfig::bearer("bearerAuth").with_scopes(vec!["read".to_string()]),
+                    SecuritySchemeConfig::bearer("bearerAuth")
+                        .with_scopes(vec!["read".to_string()]),
                 )
         })
         .include(UltraApiRouter::new("").route(__HAYAI_ROUTE_JWT_PROTECTED))

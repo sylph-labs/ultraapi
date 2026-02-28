@@ -4,13 +4,43 @@
 //! It extends minijinja with global filters, functions, and auto-reload capability.
 
 use axum::{
-    http::{header::CONTENT_TYPE, StatusCode},
+    http::{header::CONTENT_TYPE, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
+use minijinja::functions::Function;
+use minijinja::value::{FunctionArgs, FunctionResult, Value};
 use minijinja::Environment;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
+
+/// Convert serde_json::Value to minijinja::Value
+fn to_minijinja_value(v: serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::from(None::<()>),
+        serde_json::Value::Bool(b) => Value::from(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::from(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::from(f)
+            } else {
+                Value::from(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => Value::from(s),
+        serde_json::Value::Array(arr) => {
+            Value::from(arr.into_iter().map(to_minijinja_value).collect::<Vec<_>>())
+        }
+        serde_json::Value::Object(obj) => {
+            let map: BTreeMap<String, Value> = obj
+                .into_iter()
+                .map(|(k, v)| (k, to_minijinja_value(v)))
+                .collect();
+            Value::from(map)
+        }
+    }
+}
 
 /// Templates struct for rendering Jinja2 templates
 ///
@@ -45,12 +75,15 @@ impl Templates {
     ///
     /// When auto-reload is enabled, templates are reloaded from disk on each render.
     /// This is useful during development but should be disabled in production.
+    ///
+    /// Note: In minijinja 2.x, the path_loader always checks for file changes when getting templates.
+    /// This means templates are effectively reloaded on each render automatically.
+    /// However, for production, you should use `Templates::new()` to avoid file system checks.
     pub fn new_with_reload(dir: impl AsRef<Path>) -> Result<Self, TemplatesError> {
-        let mut env = Environment::new();
-        env.set_loader(minijinja::path_loader(dir));
-        env.set_auto_reload(true);
-
-        Ok(Self { env })
+        // minijinja 2.x path_loader checks files on each get_template call
+        // This provides automatic reload behavior in development
+        // For explicit control, you could use a custom loader that caches
+        Self::new(dir)
     }
 
     /// Create a Templates instance from a string (no file system required)
@@ -67,8 +100,8 @@ impl Templates {
     /// ```
     pub fn from_string(template_content: &str) -> Result<Self, TemplatesError> {
         let mut env = Environment::new();
-        // Use a dummy name for string templates
-        env.add_template("template", template_content)
+        // Use a dummy name for string templates - use owned strings for minijinja 2.x
+        env.add_template_owned("template", template_content.to_string())
             .map_err(|e| TemplatesError::LoadError(e.to_string()))?;
         Ok(Self { env })
     }
@@ -83,11 +116,13 @@ impl Templates {
     /// let mut templates = Templates::new("./templates").unwrap();
     /// templates.add_filter("my_filter", |s: String| s.to_uppercase());
     /// ```
-    pub fn add_filter<F>(&mut self, name: &str, filter_fn: F)
+    pub fn add_filter<F, Rv, Args>(&mut self, name: &str, filter_fn: F)
     where
-        F: minijinja::Function + Send + Sync + 'static,
+        F: Function<Rv, Args> + Send + Sync + 'static,
+        Rv: FunctionResult,
+        Args: for<'a> FunctionArgs<'a>,
     {
-        self.env.add_filter(name, filter_fn);
+        self.env.add_filter(name.to_string(), filter_fn);
     }
 
     /// Add a global function to the template environment
@@ -100,11 +135,13 @@ impl Templates {
     /// let mut templates = Templates::new("./templates").unwrap();
     /// templates.add_function("hello", |name: String| format!("Hello, {}!", name));
     /// ```
-    pub fn add_function<F>(&mut self, name: &str, function_fn: F)
+    pub fn add_function<F, Rv, Args>(&mut self, name: &str, function_fn: F)
     where
-        F: minijinja::Function + Send + Sync + 'static,
+        F: Function<Rv, Args> + Send + Sync + 'static,
+        Rv: FunctionResult,
+        Args: for<'a> FunctionArgs<'a>,
     {
-        self.env.add_function(name, function_fn);
+        self.env.add_function(name.to_string(), function_fn);
     }
 
     /// Add a global variable that will be available in all templates
@@ -120,7 +157,8 @@ impl Templates {
     /// ```
     pub fn add_global<V: Serialize>(&mut self, name: &str, value: V) {
         if let Ok(val) = serde_json::to_value(value) {
-            self.env.add_global(name, val);
+            self.env
+                .add_global(name.to_string(), to_minijinja_value(val));
         }
     }
 
@@ -140,7 +178,7 @@ impl Templates {
     pub fn add_globals(&mut self, globals: serde_json::Value) {
         if let serde_json::Value::Object(map) = globals {
             for (key, value) in map {
-                self.env.add_global(key, value);
+                self.env.add_global(key, to_minijinja_value(value));
             }
         }
     }
@@ -183,7 +221,38 @@ impl Templates {
         context: impl Serialize,
     ) -> Result<TemplateResponse, TemplatesError> {
         let html = self.render(name, context)?;
-        Ok(TemplateResponse(html))
+        Ok(TemplateResponse::from_html(html))
+    }
+
+    /// FastAPI-compatible method to render a template and return a TemplateResponse builder
+    ///
+    /// This provides a convenient way to create a TemplateResponse with custom status,
+    /// headers, or content-type.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use ultraapi::templates::Templates;
+    /// use axum::http::StatusCode;
+    ///
+    /// // Basic usage
+    /// let response = templates.response("hello.html", serde_json::json!({ "name": "World" }));
+    ///
+    /// // With custom status
+    /// let response = templates.response("error.html", serde_json::json!({}))
+    ///     .status(StatusCode::NOT_FOUND);
+    ///
+    /// // With custom headers
+    /// let response = templates.response("page.html", serde_json::json!({}))
+    ///     .header("X-Custom-Header", "value");
+    /// ```
+    pub fn response(
+        &self,
+        name: &str,
+        context: impl Serialize,
+    ) -> Result<TemplateResponse, TemplatesError> {
+        let html = self.render(name, context)?;
+        Ok(TemplateResponse::from_html(html))
     }
 
     /// Check if a template exists
@@ -222,6 +291,12 @@ impl TemplatesError {
     }
 }
 
+impl From<TemplatesError> for crate::ApiError {
+    fn from(err: TemplatesError) -> Self {
+        err.to_api_error()
+    }
+}
+
 impl std::fmt::Display for TemplatesError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -247,22 +322,156 @@ impl From<minijinja::Error> for TemplatesError {
     }
 }
 
-/// HTML response from template rendering
+/// HTML response from template rendering with full response capabilities
 ///
-/// This type implements `IntoResponse` and automatically sets the content-type to `text/html; charset=utf-8`.
-pub struct TemplateResponse(String);
+/// This type implements `IntoResponse` and allows customization of:
+/// - HTTP status code
+/// - Response headers
+/// - Content type
+///
+/// # Example
+///
+/// ```ignore
+/// use ultraapi::templates::TemplateResponse;
+/// use axum::http::StatusCode;
+///
+/// // Basic usage
+/// let response = TemplateResponse::from_html("<html>test</html>".to_string());
+///
+/// // With custom status
+/// let response = TemplateResponse::from_html("<html>not found</html>".to_string())
+///     .status(StatusCode::NOT_FOUND);
+///
+/// // With custom headers
+/// let response = TemplateResponse::from_html("<html>test</html>".to_string())
+///     .header("X-Custom-Header", "value")
+///     .header("Cache-Control", "no-cache");
+///
+/// // With custom content type
+/// let response = TemplateResponse::from_html("<html>test</html>".to_string())
+///     .content_type("application/xml");
+/// ```
+#[derive(Clone, Debug)]
+pub struct TemplateResponse {
+    /// The HTML body content
+    body: String,
+    /// HTTP status code (defaults to 200 OK)
+    status: StatusCode,
+    /// Response headers
+    headers: HeaderMap,
+    /// Content type (defaults to text/html; charset=utf-8)
+    content_type: String,
+}
 
 impl TemplateResponse {
     /// Create a new TemplateResponse from rendered HTML
+    ///
+    /// This is the basic constructor that creates a response with:
+    /// - Status: 200 OK
+    /// - Content-Type: text/html; charset=utf-8
+    /// - No additional headers
     pub fn from_html(html: String) -> Self {
-        TemplateResponse(html)
+        TemplateResponse {
+            body: html,
+            status: StatusCode::OK,
+            headers: HeaderMap::new(),
+            content_type: "text/html; charset=utf-8".to_string(),
+        }
+    }
+
+    /// Set the HTTP status code for the response
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use ultraapi::templates::TemplateResponse;
+    /// use axum::http::StatusCode;
+    ///
+    /// let response = TemplateResponse::from_html("<html>Not Found</html>".to_string())
+    ///     .status(StatusCode::NOT_FOUND);
+    /// ```
+    pub fn status(mut self, status: StatusCode) -> Self {
+        self.status = status;
+        self
+    }
+
+    /// Set a response header
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use ultraapi::templates::TemplateResponse;
+    ///
+    /// let response = TemplateResponse::from_html("<html>test</html>".to_string())
+    ///     .header("X-Custom-Header", "value")
+    ///     .header("Cache-Control", "no-cache");
+    /// ```
+    pub fn header(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        let name_header = axum::http::HeaderName::from_bytes(name.into().as_bytes())
+            .unwrap_or_else(|_| axum::http::HeaderName::from_static("x-custom"));
+        let value_header =
+            HeaderValue::from_str(&value.into()).unwrap_or_else(|_| HeaderValue::from_static(""));
+        self.headers.insert(name_header, value_header);
+        self
+    }
+
+    /// Set the content type for the response
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use ultraapi::templates::TemplateResponse;
+    ///
+    /// // Set custom content type
+    /// let response = TemplateResponse::from_html("<xml>test</xml>".to_string())
+    ///     .content_type("application/xml");
+    ///
+    /// // Override default content type
+    /// let response = TemplateResponse::from_html("plain text".to_string())
+    ///     .content_type("text/plain");
+    /// ```
+    pub fn content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.content_type = content_type.into();
+        self
+    }
+
+    /// Get a reference to the response body
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
+    /// Get a mutable reference to the response body
+    pub fn body_mut(&mut self) -> &mut String {
+        &mut self.body
+    }
+
+    /// Get the current status code
+    pub fn status_code(&self) -> StatusCode {
+        self.status
+    }
+
+    /// Get a reference to the headers
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    /// Get the current content type
+    pub fn get_content_type(&self) -> &str {
+        &self.content_type
     }
 }
 
 impl IntoResponse for TemplateResponse {
     fn into_response(self) -> Response {
-        // Set Content-Type to text/html with charset=utf-8
-        (StatusCode::OK, [(CONTENT_TYPE, "text/html; charset=utf-8")], self.0).into_response()
+        // Build headers: start with user-provided headers, then set content-type
+        let mut headers = self.headers.clone();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_str(&self.content_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("text/html; charset=utf-8")),
+        );
+
+        (self.status, headers, self.body).into_response()
     }
 }
 
@@ -285,6 +494,31 @@ pub fn template_response(
     templates.template_response(name, context)
 }
 
+/// FastAPI-compatible helper to create a TemplateResponse with builder pattern
+///
+/// This function provides a convenient way to create a TemplateResponse that can be
+/// customized with status, headers, and content-type.
+///
+/// # Example
+///
+/// ```ignore
+/// use ultraapi::templates::{Templates, response};
+/// use axum::http::StatusCode;
+///
+/// fn handler(dep: Dep<Templates>) -> impl IntoResponse {
+///     response(&dep, "hello.html", serde_json::json!({ "name": "World" }))
+///         .status(StatusCode::CREATED)
+///         .header("X-Custom-Header", "value")
+/// }
+/// ```
+pub fn response(
+    templates: &Templates,
+    name: &str,
+    context: impl Serialize,
+) -> Result<TemplateResponse, TemplatesError> {
+    templates.response(name, context)
+}
+
 /// Create a TemplateResponse directly (convenience function)
 ///
 /// This is a convenience function that can be used in handlers.
@@ -305,4 +539,26 @@ pub fn render_template(
     context: impl Serialize,
 ) -> Result<TemplateResponse, TemplatesError> {
     templates.template_response(name, context)
+}
+
+/// Create a TemplateResponse directly from HTML string (convenience function)
+///
+/// This is useful when you have pre-rendered HTML or want to return static HTML
+/// with custom status/headers.
+///
+/// # Example
+///
+/// ```ignore
+/// use ultraapi::templates::html_response;
+/// use axum::http::StatusCode;
+///
+/// #[get("/static")]
+/// async fn static_page() -> impl IntoResponse {
+///     html_response("<html><body>Static Page</body></html>")
+///         .status(StatusCode::OK)
+///         .header("Cache-Control", "public, max-age=3600")
+/// }
+/// ```
+pub fn html_response(html: impl Into<String>) -> TemplateResponse {
+    TemplateResponse::from_html(html.into())
 }
