@@ -565,3 +565,24 @@ fn test_multipart_route_paths() {
         "/upload/with-meta route should exist"
     );
 }
+
+#[tokio::test]
+async fn test_multipart_request_body_openapi_content_type() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    let upload_post = &body["paths"]["/upload"]["post"];
+    let request_body = upload_post["requestBody"].as_object().unwrap();
+    let content = request_body["content"].as_object().unwrap();
+
+    assert!(
+        content.get("multipart/form-data").is_some(),
+        "multipart endpoint should expose multipart/form-data requestBody"
+    );
+
+    let schema_ref = &content["multipart/form-data"]["schema"]["$ref"];
+    assert_eq!(schema_ref, "#/components/schemas/Multipart");
+}

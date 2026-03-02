@@ -43,6 +43,12 @@ struct Pagination {
     limit: Option<i64>,
 }
 
+#[derive(ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
+struct LoginForm {
+    username: String,
+    password: String,
+}
+
 struct Database;
 impl Database {
     async fn get_user(&self, id: i64) -> Option<User> {
@@ -92,6 +98,16 @@ async fn create_user(body: CreateUser, db: Dep<Database>) -> User {
 #[tag("users")]
 async fn list_users(query: Query<Pagination>, db: Dep<Database>) -> Vec<User> {
     db.list_users(query.page, query.limit).await
+}
+
+/// Login endpoint using form-urlencoded body
+#[post("/login")]
+#[tag("auth")]
+async fn login_form(form: Form<LoginForm>) -> Value {
+    serde_json::json!({
+        "username": form.0.username,
+        "password_length": form.0.password.len(),
+    })
 }
 
 // --- Helper ---
@@ -359,6 +375,31 @@ async fn test_openapi_tags() {
     let get_user = &body["paths"]["/users/{id}"]["get"];
     let tags = get_user["tags"].as_array().unwrap();
     assert!(tags.iter().any(|t| t == "users"));
+}
+
+#[tokio::test]
+async fn test_openapi_form_request_body_content_type() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    let body: Value = resp.json().await.unwrap();
+
+    let login_post = &body["paths"]["/login"]["post"];
+    let request_body = login_post["requestBody"]
+        .as_object()
+        .expect("login should have requestBody");
+
+    let content = request_body["content"]
+        .as_object()
+        .expect("requestBody should have content");
+
+    assert!(
+        content.get("application/x-www-form-urlencoded").is_some(),
+        "Form endpoint should expose x-www-form-urlencoded content"
+    );
+    assert_eq!(
+        content["application/x-www-form-urlencoded"]["schema"]["$ref"],
+        "#/components/schemas/LoginForm"
+    );
 }
 
 // ---- OpenAPI Spec: Descriptions ----

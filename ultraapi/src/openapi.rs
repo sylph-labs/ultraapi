@@ -1008,6 +1008,66 @@ fn schema_type_string(schema: &schemars::schema::Schema) -> String {
     }
 }
 
+/// Generate placeholder schema for multipart/form-data request bodies.
+///
+/// `axum::extract::Multipart` itself is not a serializable api_model type,
+/// so OpenAPI generation uses this placeholder to emit a valid request body schema.
+pub fn multipart_placeholder_schema() -> Schema {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "file".to_string(),
+        Property {
+            type_name: "string".to_string(),
+            format: Some("binary".to_string()),
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Uploaded file".to_string()),
+            ref_path: None,
+            items: None,
+            nullable: false,
+            example: None,
+            additional_properties: None,
+            read_only: false,
+            write_only: false,
+        },
+    );
+    properties.insert(
+        "metadata".to_string(),
+        Property {
+            type_name: "string".to_string(),
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Optional form field placeholder".to_string()),
+            ref_path: None,
+            items: None,
+            nullable: true,
+            example: None,
+            additional_properties: None,
+            read_only: false,
+            write_only: false,
+        },
+    );
+    Schema {
+        type_name: "object".to_string(),
+        properties,
+        required: vec![],
+        description: Some("Multipart form-data request body placeholder".to_string()),
+        enum_values: None,
+        example: None,
+        one_of: None,
+        discriminator: None,
+    }
+}
+
 /// Generate the standard ApiError schema
 pub fn api_error_schema() -> Schema {
     let mut properties = HashMap::new();

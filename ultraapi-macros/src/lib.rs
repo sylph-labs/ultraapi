@@ -515,6 +515,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let mut call_args = Vec::new();
     let mut has_body = false;
     let mut has_form_body = false;
+    let mut has_multipart_body = false;
     let mut has_generator_deps = false;
     let mut body_type: Option<&Type> = None;
     let mut path_param_types: Vec<(&syn::Ident, &Type)> = Vec::new();
@@ -640,15 +641,19 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 }
             } else if is_form_type(ty) {
                 // Form<T> extractor for application/x-www-form-urlencoded
+                has_body = true;
                 has_form_body = true;
                 if let Type::Path(tp) = ty.as_ref() {
                     if let Some(seg) = tp.path.segments.last() {
                         if let Some(inner) = extract_inner_type(seg) {
+                            body_type = Some(inner);
                             dep_extractions.push(quote! {
                                 let #pat: ultraapi::axum::extract::Form<#inner> =
                                     ultraapi::axum::extract::Form::from_request(req, &state).await
                                     .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid form data: {}", e)))?;
-                                #pat.validate().map_err(|e| ultraapi::ApiError::validation_error(e))?;
+                                if let Err(e) = ultraapi::ValidatedWrapper::validate(&#pat.0) {
+                                    return Err(ultraapi::ApiError::validation_error(e));
+                                }
                             });
                             call_args.push(quote!(#pat));
                         }
@@ -656,6 +661,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 }
             } else if is_multipart_type(ty) {
                 // Multipart extractor for file uploads
+                has_body = true;
+                has_multipart_body = true;
                 dep_extractions.push(quote! {
                     let #pat: ultraapi::axum::extract::Multipart =
                         ultraapi::axum::extract::Multipart::from_request(req, &state).await
@@ -774,8 +781,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         quote! {}
     };
 
-    let body_extraction = if has_form_body {
-        // Form body is handled in the dep_extractions loop
+    let body_extraction = if has_form_body || has_multipart_body {
+        // Form and Multipart bodies are handled in the dep_extractions loop
         quote! {}
     } else if has_body {
         let bty = body_type.unwrap();
@@ -1077,7 +1084,18 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         })
         .collect();
 
-    let body_type_name = body_type.map(get_type_name).unwrap_or_default();
+    let body_type_name = if has_multipart_body {
+        "Multipart".to_string()
+    } else {
+        body_type.map(get_type_name).unwrap_or_default()
+    };
+    let request_body_content_type = if has_form_body {
+        "application/x-www-form-urlencoded"
+    } else if has_multipart_body {
+        "multipart/form-data"
+    } else {
+        "application/json"
+    };
     let fn_name_str = fn_name.to_string();
 
     // Generate ResponseModelOptions expression
@@ -1230,6 +1248,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             parameters: &[#(#path_param_schemas),*],
             has_body: #has_body,
             body_type_name: #body_type_name,
+            request_body_content_type: #request_body_content_type,
             success_status: #status_lit,
             description: #description,
             tags: &[#(#tags),*],
@@ -1483,6 +1502,7 @@ fn ws_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             parameters: &[],
             has_body: false,
             body_type_name: "",
+            request_body_content_type: "",
             success_status: 101,
             description: #description,
             tags: &[#(#tags),*],
@@ -1733,6 +1753,7 @@ fn sse_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             parameters: &[#(#path_param_schemas),*],
             has_body: false,
             body_type_name: "",
+            request_body_content_type: "",
             success_status: #status_lit,
             description: #description,
             tags: &[#(#tags),*],

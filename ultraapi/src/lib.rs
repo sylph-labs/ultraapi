@@ -1821,6 +1821,8 @@ pub struct RouteInfo {
     pub parameters: &'static [openapi::Parameter],
     pub has_body: bool,
     pub body_type_name: &'static str,
+    /// OpenAPI requestBody content-type (e.g. application/json, application/x-www-form-urlencoded, multipart/form-data)
+    pub request_body_content_type: &'static str,
     pub success_status: u16,
     pub description: &'static str,
     pub tags: &'static [&'static str],
@@ -3509,6 +3511,14 @@ impl UltraApiApp {
             .content_type
             .unwrap_or(route.response_class.content_type());
 
+        let request_schema_ref = if route.request_body_content_type == "multipart/form-data" {
+            Some("#/components/schemas/Multipart".to_string())
+        } else if route.has_body {
+            Some(format!("#/components/schemas/{}", route.body_type_name))
+        } else {
+            None
+        };
+
         // For non-JSON responses, we may not have a schema ref
         let response_schema_ref = if route.response_class == ResponseClass::Json {
             schema_ref_value
@@ -3534,10 +3544,10 @@ impl UltraApiApp {
             tags,
             parameters: route.parameters.to_vec(),
             request_body: if route.has_body {
-                Some(openapi::RequestBody {
+                request_schema_ref.map(|schema_ref| openapi::RequestBody {
                     required: true,
-                    content_type: "application/json".to_string(),
-                    schema_ref: format!("#/components/schemas/{}", route.body_type_name),
+                    content_type: route.request_body_content_type.to_string(),
+                    schema_ref,
                 })
             } else {
                 None
@@ -3677,7 +3687,7 @@ impl UltraApiApp {
     fn generate_openapi_spec(&self) -> openapi::OpenApiSpec {
         let mut schemas = HashMap::new();
 
-        // Add ApiError schema
+        // Add shared schemas
         schemas.insert("ApiError".to_string(), openapi::api_error_schema());
 
         for info in inventory::iter::<SchemaInfo> {
@@ -3685,6 +3695,24 @@ impl UltraApiApp {
             for (nested_name, nested_schema) in (info.nested_fn)() {
                 schemas.entry(nested_name).or_insert(nested_schema);
             }
+        }
+
+        // Only register multipart placeholder schema when needed by at least one route.
+        let has_multipart_request_body = if self.has_explicit_routes() {
+            self.resolve_routes().iter().any(|r| {
+                r.route_info.has_body
+                    && r.route_info.request_body_content_type == "multipart/form-data"
+            })
+        } else {
+            inventory::iter::<&RouteInfo>().any(|route| {
+                route.has_body && route.request_body_content_type == "multipart/form-data"
+            })
+        };
+        if has_multipart_request_body {
+            schemas.insert(
+                "Multipart".to_string(),
+                openapi::multipart_placeholder_schema(),
+            );
         }
 
         let mut paths = HashMap::new();
