@@ -55,6 +55,7 @@ Then open:
 
 - Compatibility matrix: [docs/compatibility-matrix.md](./docs/compatibility-matrix.md)
 - Contributing guide: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Weekly release notes template: [docs/release-notes-template.md](./docs/release-notes-template.md)
 - Good first issues: [label: good first issue](https://github.com/sylph-labs/ultraapi/labels/good%20first%20issue)
 - CI status: badge at the top of this README
 
@@ -143,7 +144,7 @@ async fn test_my_api() {
 
 #### 3. Using `into_router_with_lifespan()`
 
-When using the router directly (for custom servers or other purposes), you can integrate the lifecycle using `into_router_with_lifespan()`.
+When using the router directly (for custom servers or other purposes), `into_router()` now enables lifespan compatibility mode by default (lazy startup + shutdown on router drop). If you need an explicit handle for deterministic shutdown timing, use `into_router_with_lifespan()`.
 
 ```rust
 let app = UltraApiApp::new()
@@ -164,8 +165,9 @@ runner.shutdown().await;
 ### Notes
 
 - **Preventing multiple executions**: The startup hook runs only once on the first request. Internal locking prevents duplicate execution.
-- **Using with `into_router()`**: The regular `into_router()` method does not integrate lifecycle. Use `into_router_with_lifespan()` when you need lifecycle support.
-- **Lazy startup**: With `into_router_with_lifespan()` and `TestClient`, startup runs on the first request (lazy startup).
+- **Using with `into_router()`**: `into_router()` enables lifespan compatibility mode (lazy startup + best-effort shutdown when the router is dropped).
+- **Using with `into_router_with_lifespan()`**: Use this when you need an explicit `LifespanRunner` and deterministic `shutdown().await` timing.
+- **Lazy startup**: With `into_router()` / `into_router_with_lifespan()` and `TestClient`, startup runs on the first request (lazy startup).
 
 ## Installation
 
@@ -1367,14 +1369,14 @@ async fn get_order(id: i64) -> serde_json::Value {
 
 - `include` / `exclude` / `by_alias`: fully supported in runtime shaping (including nested FastAPI-style dict/set selectors, e.g. `include={"customer": {"email"}, "items": {"__all__": {"sku"}}}`).
 - `exclude_none=true`: removes `null` fields recursively from runtime JSON output.
-- `exclude_unset=true`: uses key-presence semantics (missing keys are treated as unset; explicitly present `null`/empty values are kept).
-- `exclude_defaults=true`: removes default-like runtime values (`null`, `false`, `0`, `""`, empty arrays/objects).
+- `exclude_unset=true`: for `#[api_model]` responses, uses explicit field-set metadata when available (omitted fields are removed, explicitly provided `null`/empty values are kept). For plain JSON values without field-set metadata, key-presence behavior is used.
+- `exclude_defaults=true`: removes fields only when their value exactly matches declared field defaults (`#[api_model]` metadata from `#[serde(default)]` / `#[serde(default = "...")]`).
 
 Notes on FastAPI compatibility:
 
 - FastAPI's `exclude_unset` uses model-level field-set metadata.
-- FastAPI's `exclude_defaults` compares against per-field default metadata.
-- UltraAPI's runtime shaping operates on `serde_json::Value`; `exclude_unset` follows JSON key presence, and `exclude_defaults` is implemented with JSON-level heuristics.
+- UltraAPI now consumes field-set metadata for `#[api_model]` response shaping paths where metadata is available.
+- `exclude_defaults` no longer uses falsy-value heuristics; without field-default metadata, values are kept.
 
 ### Field-Level Attributes for api_model
 

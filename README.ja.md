@@ -55,6 +55,7 @@ async fn main() {
 
 - 互換性マトリクス: [docs/compatibility-matrix.md](./docs/compatibility-matrix.md)
 - コントリビューションガイド: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- 週次リリースノート雛形: [docs/release-notes-template.md](./docs/release-notes-template.md)
 - good first issue: [label: good first issue](https://github.com/sylph-labs/ultraapi/labels/good%20first%20issue)
 - CI: README 冒頭のバッジ
 
@@ -143,7 +144,7 @@ async fn test_my_api() {
 
 #### 3. `into_router_with_lifespan()` を使用する場合
 
-router を直接使用する場合（カスタムサーバーや他の用途）は、`into_router_with_lifespan()` を使用して lifecycle を統合できます。
+router を直接使用する場合（カスタムサーバーや他の用途）は、`into_router()` がデフォルトで lifecycle 互換モード（lazy startup + router drop 時の shutdown）を有効化します。shutdown のタイミングを明示的に制御したい場合は `into_router_with_lifespan()` を使用してください。
 
 ```rust
 let app = UltraApiApp::new()
@@ -164,8 +165,9 @@ runner.shutdown().await;
 ### 注意事項
 
 - **複数回実行の防止**: startup フックは最初のリクエスト時に一度だけ実行されます。重複実行を防ぐため、内部で適切なロックを使用しています。
-- **`into_router()` との併用**: 通常の `into_router()` メソッドは lifecycle を統合しません。lifecycle を使用する場合は `into_router_with_lifespan()` を使用してください。
-- **lazy startup**: `into_router_with_lifespan()` と `TestClient` の場合、startup は最初のリクエスト時に実行されます（lazy startup）。
+- **`into_router()` との併用**: `into_router()` は lifecycle 互換モード（lazy startup + router drop 時の best-effort shutdown）を有効化します。
+- **`into_router_with_lifespan()` を使う場面**: `LifespanRunner` を明示的に受け取り、`shutdown().await` のタイミングを厳密に制御したい場合に使用してください。
+- **lazy startup**: `into_router()` / `into_router_with_lifespan()` と `TestClient` の場合、startup は最初のリクエスト時に実行されます（lazy startup）。
 
 ## インストール
 
@@ -505,14 +507,14 @@ async fn admin_endpoint(token: OAuth2PasswordBearer) -> String {
 
 - `include` / `exclude` / `by_alias`: 実行時 shaping で対応（ネスト指定は FastAPI 形式の dict/set 混在に対応。例: `include={"customer": {"email"}, "items": {"__all__": {"sku"}}}`）
 - `exclude_none=true`: 実行時 JSON 出力から `null` フィールドを再帰的に除外
-- `exclude_unset=true`: キー存在ベースで判定（キーが無いフィールドだけ未設定扱い。明示的な `null` / 空配列 / 空オブジェクトは保持）
-- `exclude_defaults=true`: デフォルト相当の値（`null` / `false` / `0` / 空文字 / 空配列 / 空オブジェクト）を除外
+- `exclude_unset=true`: `#[api_model]` レスポンスでは field-set メタデータが利用可能な場合にそれを使って判定（未設定フィールドのみ除外、明示的な `null` / 空値は保持）。field-set がない plain JSON では従来どおりキー存在ベース。
+- `exclude_defaults=true`: `#[api_model]` の宣言デフォルト（`#[serde(default)]` / `#[serde(default = "...")]`）と値が一致するフィールドのみ除外
 
 FastAPI 互換に関する注意:
 
 - FastAPI の `exclude_unset` は「明示的にセットされたフィールド」メタデータを使う
-- FastAPI の `exclude_defaults` はフィールドごとのデフォルト値メタデータを使う
-- UltraAPI の実行時 shaping は `serde_json::Value` を対象にするため、`exclude_unset` は JSON のキー存在で判定し、`exclude_defaults` は JSON レベルのヒューリスティックで実装している
+- UltraAPI でも `#[api_model]` の response shaping 経路で field-set メタデータを利用可能
+- `exclude_defaults` は falsy 値ヒューリスティックを使わず、field-default メタデータが無い場合は値を保持
 
 ### モデルフィールド向け属性
 
