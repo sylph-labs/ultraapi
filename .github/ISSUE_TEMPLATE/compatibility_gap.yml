@@ -1,0 +1,35 @@
+name: FastAPI compatibility gap
+description: Report behavior differences between FastAPI and UltraAPI
+labels: [compatibility]
+body:
+  - type: textarea
+    id: fastapi-snippet
+    attributes:
+      label: FastAPI reference snippet
+      placeholder: Minimal FastAPI code showing expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: ultraapi-snippet
+    attributes:
+      label: UltraAPI reproduction snippet
+      placeholder: Equivalent UltraAPI code and result
+    validations:
+      required: true
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: Expected vs actual
+      placeholder: Explain the diff clearly
+    validations:
+      required: true
+  - type: input
+    id: category
+    attributes:
+      label: Area
+      placeholder: e.g. response_model / Depends / OpenAPI / security
+  - type: input
+    id: version
+    attributes:
+      label: UltraAPI version
+      placeholder: e.g. 0.1.x

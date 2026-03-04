@@ -13,6 +13,51 @@ A FastAPI-inspired Rust web framework with automatic OpenAPI/Swagger documentati
 - **Docs UI**: `GET /docs` (default: Embedded Scalar)
 - **ReDoc UI**: `GET /redoc`
 
+## Why UltraAPI in 30 seconds
+
+- Keep FastAPI-like ergonomics (`#[get]`, `#[post]`, `#[api_model]`) while shipping as a native Rust binary.
+- Generate OpenAPI + docs UI automatically, so the API contract stays close to your code.
+- Use extractors, DI, validation, and response shaping without leaving idiomatic Rust.
+
+### 30-second quick start
+
+```bash
+cargo new ultraapi-hello && cd ultraapi-hello
+cargo add ultraapi tokio --features tokio/full
+```
+
+```rust
+use ultraapi::prelude::*;
+
+#[get("/health")]
+async fn health() -> serde_json::Value {
+    serde_json::json!({ "status": "ok" })
+}
+
+#[tokio::main]
+async fn main() {
+    UltraApiApp::new()
+        .title("UltraAPI Quickstart")
+        .version("0.1.0")
+        .route(__HAYAI_ROUTE_HEALTH)
+        .serve("0.0.0.0:3000")
+        .await;
+}
+```
+
+Then open:
+
+- `http://localhost:3000/health`
+- `http://localhost:3000/openapi.json`
+- `http://localhost:3000/docs`
+
+## Project health
+
+- Compatibility matrix: [docs/compatibility-matrix.md](./docs/compatibility-matrix.md)
+- Contributing guide: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Good first issues: [label: good first issue](https://github.com/sylph-labs/ultraapi/labels/good%20first%20issue)
+- CI status: badge at the top of this README
+
 ## Features
 
 - **FastAPI-style route definitions**: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
@@ -237,11 +282,9 @@ ultraapi -v run ultraapi-example --port 4000
 #### Development Mode
 
 ```bash
-# Run in development mode (currently same as run)
+# Run in development mode (with auto-reload)
 ultraapi dev ultraapi-example --host 0.0.0.0 --port 3001
 ```
-
-> **Note**: Auto-reload feature is not yet implemented.
 
 ### Usage Examples
 
@@ -1305,7 +1348,33 @@ async fn get_user_summary(id: i64) -> UserProfile {
         is_admin: false,
     }
 }
+
+// Nested include/exclude (FastAPI-style dict/set mix)
+#[get(
+    "/orders/{id}",
+    response_model(
+        include={"order_id", "customer": {"email"}, "items": {"__all__": {"sku"}}},
+        exclude={"customer": {"password_hash"}}
+    )
+)]
+async fn get_order(id: i64) -> serde_json::Value {
+    # let _ = id;
+    # serde_json::json!({})
+}
 ```
+
+`response_model` options currently behave as follows:
+
+- `include` / `exclude` / `by_alias`: fully supported in runtime shaping (including nested FastAPI-style dict/set selectors, e.g. `include={"customer": {"email"}, "items": {"__all__": {"sku"}}}`).
+- `exclude_none=true`: removes `null` fields recursively from runtime JSON output.
+- `exclude_unset=true`: uses key-presence semantics (missing keys are treated as unset; explicitly present `null`/empty values are kept).
+- `exclude_defaults=true`: removes default-like runtime values (`null`, `false`, `0`, `""`, empty arrays/objects).
+
+Notes on FastAPI compatibility:
+
+- FastAPI's `exclude_unset` uses model-level field-set metadata.
+- FastAPI's `exclude_defaults` compares against per-field default metadata.
+- UltraAPI's runtime shaping operates on `serde_json::Value`; `exclude_unset` follows JSON key presence, and `exclude_defaults` is implemented with JSON-level heuristics.
 
 ### Field-Level Attributes for api_model
 
@@ -1519,13 +1588,15 @@ async fn protected_route() -> String {
 
 ### Runtime Auth Enforcement
 
-UltraAPI supports runtime enforcement of security requirements via middleware:
+UltraAPI supports runtime enforcement of security requirements via middleware.
+
+> Default behavior is now **secure-by-default**: when routes declare `#[security(...)]`, auth middleware is auto-enabled to prevent accidental protection gaps.
 
 ```rust
 use ultraapi::prelude::*;
-use ultraapi::middleware::{SecuritySchemeConfig, ScopedAuthValidator, MockAuthValidator};
+use ultraapi::middleware::{AuthDefaultPolicy, SecuritySchemeConfig, ScopedAuthValidator, MockAuthValidator};
 
-// Enable auth middleware with default mock validator
+// Explicit enable (still supported)
 let app = UltraApiApp::new()
     .title("Secure API")
     .version("1.0.0")
@@ -1533,6 +1604,11 @@ let app = UltraApiApp::new()
     .middleware(|builder| {
         builder.enable_auth()  // Enforce #[security] routes at runtime
     });
+
+// Legacy compatibility: require explicit auth enablement
+let legacy_mode = UltraApiApp::new()
+    .bearer_auth()
+    .middleware(|builder| builder.auth_default_policy(AuthDefaultPolicy::ExplicitOnly));
 
 // With custom API keys
 let app = UltraApiApp::new()

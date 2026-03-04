@@ -13,6 +13,51 @@ Rust で **FastAPI ライクな開発体験（DX）** を目指す、Axum ベー
 - Docs UI: `GET /docs`（既定は Embedded: Scalar）
 - ReDoc UI: `GET /redoc`
 
+## 30秒でわかる UltraAPI
+
+- FastAPI 風の書き味（`#[get]`, `#[post]`, `#[api_model]`）を Rust で実現
+- コードから OpenAPI/ドキュメント UI を自動生成
+- Extractor / DI / Validation / response_model を Rust らしく利用可能
+
+### 30秒クイックスタート
+
+```bash
+cargo new ultraapi-hello && cd ultraapi-hello
+cargo add ultraapi tokio --features tokio/full
+```
+
+```rust
+use ultraapi::prelude::*;
+
+#[get("/health")]
+async fn health() -> serde_json::Value {
+    serde_json::json!({ "status": "ok" })
+}
+
+#[tokio::main]
+async fn main() {
+    UltraApiApp::new()
+        .title("UltraAPI Quickstart")
+        .version("0.1.0")
+        .route(__HAYAI_ROUTE_HEALTH)
+        .serve("0.0.0.0:3000")
+        .await;
+}
+```
+
+起動後の確認先:
+
+- `http://localhost:3000/health`
+- `http://localhost:3000/openapi.json`
+- `http://localhost:3000/docs`
+
+## プロジェクトの信頼情報
+
+- 互換性マトリクス: [docs/compatibility-matrix.md](./docs/compatibility-matrix.md)
+- コントリビューションガイド: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- good first issue: [label: good first issue](https://github.com/sylph-labs/ultraapi/labels/good%20first%20issue)
+- CI: README 冒頭のバッジ
+
 ## 特徴
 
 - **FastAPI 風のルート定義**: `#[get]`, `#[post]`, `#[put]`, `#[delete]`
@@ -237,11 +282,9 @@ ultraapi -v run ultraapi-example --port 4000
 #### 開発モード
 
 ```bash
-# 開発モードで実行（現在のところ run と同じ動作）
+# 開発モードで実行（自動リロード有効）
 ultraapi dev ultraapi-example --host 0.0.0.0 --port 3001
 ```
-
-> **注意**: 自動リロード（auto-reload）機能は MVP では未実装です。
 
 ### 使用例
 
@@ -457,6 +500,19 @@ async fn admin_endpoint(token: OAuth2PasswordBearer) -> String {
 - `#[summary("...")]`: OpenAPI summary
 - `#[external_docs(url = "...", description = "...")]`: OpenAPI externalDocs
 - `#[deprecated]`: OpenAPI deprecated
+
+`response_model` オプションの現状挙動:
+
+- `include` / `exclude` / `by_alias`: 実行時 shaping で対応（ネスト指定は FastAPI 形式の dict/set 混在に対応。例: `include={"customer": {"email"}, "items": {"__all__": {"sku"}}}`）
+- `exclude_none=true`: 実行時 JSON 出力から `null` フィールドを再帰的に除外
+- `exclude_unset=true`: キー存在ベースで判定（キーが無いフィールドだけ未設定扱い。明示的な `null` / 空配列 / 空オブジェクトは保持）
+- `exclude_defaults=true`: デフォルト相当の値（`null` / `false` / `0` / 空文字 / 空配列 / 空オブジェクト）を除外
+
+FastAPI 互換に関する注意:
+
+- FastAPI の `exclude_unset` は「明示的にセットされたフィールド」メタデータを使う
+- FastAPI の `exclude_defaults` はフィールドごとのデフォルト値メタデータを使う
+- UltraAPI の実行時 shaping は `serde_json::Value` を対象にするため、`exclude_unset` は JSON のキー存在で判定し、`exclude_defaults` は JSON レベルのヒューリスティックで実装している
 
 ### モデルフィールド向け属性
 

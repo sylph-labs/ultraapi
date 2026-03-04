@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose a new feature or DX improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      placeholder: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      placeholder: What API/behavior would you like to see?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      placeholder: Any workaround or alternative approach?
+  - type: textarea
+    id: fastapi
+    attributes:
+      label: FastAPI reference (optional)
+      description: If this is parity-related, add FastAPI snippet/docs link.
+      placeholder: Link + minimal example
