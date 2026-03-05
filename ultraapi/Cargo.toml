@@ -1,6 +1,6 @@
 [package]
 name = "ultraapi"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A FastAPI-inspired Rust web framework with automatic OpenAPI generation"
 license = "MIT"
@@ -13,7 +13,7 @@ default = []
 graphql = ["async-graphql", "async-graphql-axum"]
 
 [dependencies]
-ultraapi-macros = { version = "0.1.0", path = "../ultraapi-macros" }
+ultraapi-macros = { version = "0.1.1", path = "../ultraapi-macros" }
 axum = { version = "0.8", features = ["json", "form", "multipart", "ws", "query"] }
 axum-extra = { version = "0.12", features = ["cookie", "typed-header"] }
 async-trait = "0.1"
