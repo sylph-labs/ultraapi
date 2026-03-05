@@ -31,6 +31,9 @@ async fn service_unavailable_route() -> Result<(), ApiError> {
         status: StatusCode::SERVICE_UNAVAILABLE,
         error: "Service down".to_string(),
         details: vec![],
+        detail: vec![],
+        http_detail: None,
+        headers: Default::default(),
     })
 }
 

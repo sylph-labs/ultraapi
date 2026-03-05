@@ -398,6 +398,19 @@ async fn combined_public_route() -> String {
     "public data".to_string()
 }
 
+#[get("/combined-and-or")]
+#[security("bearer&&apiKeyAuth")]
+#[security("oauth2AuthCode:read")]
+async fn combined_and_or_route() -> String {
+    "and-or data".to_string()
+}
+
+#[get("/router-merge-with-route")]
+#[security("apiKeyAuth")]
+async fn router_merge_with_route_security() -> String {
+    "router merge data".to_string()
+}
+
 #[tokio::test]
 async fn test_combined_security_schemes() {
     let app = UltraApiApp::new()
@@ -487,6 +500,113 @@ async fn test_route_level_security_with_multiple_schemes() {
     // Check public route has no security requirement
     let public_sec = &body["paths"]["/combined-public"]["get"]["security"];
     assert!(public_sec.is_null() || public_sec.as_array().is_some_and(|s| s.is_empty()));
+}
+
+#[tokio::test]
+async fn test_route_level_security_and_or_structure() {
+    let app = UltraApiApp::new()
+        .title("Route Security AND/OR Test")
+        .version("0.1.0")
+        .bearer_auth()
+        .security_scheme(
+            "apiKeyAuth",
+            ultraapi::openapi::SecurityScheme::ApiKey {
+                name: "X-API-Key".to_string(),
+                location: "header".to_string(),
+            },
+        )
+        .oauth2_authorization_code(
+            "oauth2AuthCode",
+            "https://example.com/authorize",
+            "https://example.com/token",
+            [("read", "Read access")],
+        )
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        ultraapi::axum::serve(listener, app).await.unwrap();
+    });
+
+    let resp = reqwest::get(format!("http://{}/openapi.json", addr))
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    let security = body["paths"]["/combined-and-or"]["get"]["security"]
+        .as_array()
+        .expect("security should be an array");
+
+    assert_eq!(security.len(), 2, "should have OR branches");
+
+    let has_bearer_and_api_key = security
+        .iter()
+        .any(|req| req.get("bearerAuth").is_some() && req.get("apiKeyAuth").is_some());
+    assert!(
+        has_bearer_and_api_key,
+        "one branch should require bearerAuth AND apiKeyAuth"
+    );
+
+    let has_oauth_scoped = security.iter().any(|req| {
+        req.get("oauth2AuthCode")
+            .is_some_and(|scopes| scopes == &serde_json::json!(["read"]))
+    });
+    assert!(
+        has_oauth_scoped,
+        "one branch should require oauth2AuthCode with read scope"
+    );
+}
+
+#[tokio::test]
+async fn test_router_level_and_route_level_security_merge_as_and() {
+    let secured_router = UltraApiRouter::new("/secured")
+        .security("bearer||basic")
+        .route(__HAYAI_ROUTE_ROUTER_MERGE_WITH_ROUTE_SECURITY);
+
+    let app = UltraApiApp::new()
+        .title("Router+Route Security Merge Test")
+        .version("0.1.0")
+        .bearer_auth()
+        .basic_auth()
+        .security_scheme(
+            "apiKeyAuth",
+            ultraapi::openapi::SecurityScheme::ApiKey {
+                name: "X-API-Key".to_string(),
+                location: "header".to_string(),
+            },
+        )
+        .include(secured_router)
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        ultraapi::axum::serve(listener, app).await.unwrap();
+    });
+
+    let resp = reqwest::get(format!("http://{}/openapi.json", addr))
+        .await
+        .unwrap();
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    let security = body["paths"]["/secured/router-merge-with-route"]["get"]["security"]
+        .as_array()
+        .expect("security should be an array");
+
+    assert_eq!(security.len(), 2, "router OR should produce two branches");
+
+    let has_bearer_branch = security
+        .iter()
+        .any(|req| req.get("apiKeyAuth").is_some() && req.get("bearerAuth").is_some());
+    let has_basic_branch = security
+        .iter()
+        .any(|req| req.get("apiKeyAuth").is_some() && req.get("basicAuth").is_some());
+
+    assert!(
+        has_bearer_branch && has_basic_branch,
+        "route-level apiKeyAuth should be AND-merged into each router-level OR branch"
+    );
 }
 
 // ===== App-Level + Route-Level Combined Tests =====

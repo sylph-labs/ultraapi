@@ -47,18 +47,15 @@ fn test_response_schema_generated() {
     assert!(schema.properties.contains_key("created_at"));
 }
 
-// ---- Test 2: Field Alias - NOTE: Using serde rename on api_model types is not supported ----
+// ---- Test 2: Field Alias support (serde rename) ----
 
-// NOTE: The framework's api_model macro generates its own Serialize/Deserialize.
-// Using serde(rename) attribute would conflict. This is a capability gap test.
-//
-// To test: Check if schemars (which api_model uses) properly handles field names.
-// The schema will use Rust field names, not any serde renames.
+// NOTE: `#[api_model]` preserves serde rename attributes,
+// reflecting aliases in JSON serialization/deserialization and schema generation.
 
-// ---- Test 3: Skip Serialization - NOTE: Using serde skip on api_model types is not supported ----
+// ---- Test 3: Skip Serialization support (serde skip) ----
 
-// NOTE: The framework's api_model macro generates its own Serialize/Deserialize.
-// Using serde(skip) attribute would conflict. This is a capability gap test.
+// NOTE: `#[api_model]` preserves serde(skip),
+// excluding skipped fields in both runtime JSON and generated schema.
 
 // The framework does support Option<T> which maps to nullable in schema
 // and is omitted when None during serialization (via the Serialize impl).
@@ -273,7 +270,7 @@ struct AliasedApiModelResponse {
 }
 
 #[test]
-fn test_alias_not_supported_with_api_model() {
+fn test_alias_supported_with_api_model() {
     let response = AliasedApiModelResponse {
         user_id: 7,
         display_name: "Alice".into(),
@@ -313,7 +310,7 @@ struct SkipApiModelResponse {
 }
 
 #[test]
-fn test_skip_not_supported_with_api_model() {
+fn test_skip_supported_with_api_model() {
     let response = SkipApiModelResponse {
         id: 10,
         internal: "secret".into(),
@@ -547,6 +544,9 @@ fn test_response_model_include() {
         include: Some(&["id", "name"]),
         exclude: None,
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -572,6 +572,9 @@ fn test_response_model_exclude() {
         include: None,
         exclude: Some(&["password_hash", "internal_note"]),
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -600,6 +603,9 @@ fn test_response_model_include_takes_precedence() {
         include: Some(&["id", "username"]),
         exclude: Some(&["email"]),
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -620,15 +626,13 @@ fn test_response_model_include_takes_precedence() {
 
 #[test]
 fn test_response_model_nested_include_exclude() {
-    // Note: The current implementation applies include/exclude at each level recursively.
-    // This means if you include=["order_id", "customer"], nested objects inherit this filter.
-    // For nested filtering, use exclude only.
-
     let options = ultraapi::ResponseModelOptions {
-        // Using only exclude - this will filter password_hash at all levels
-        include: None,
-        exclude: Some(&["password_hash", "total", "status"]),
+        include: Some(&["order_id", "customer.email", "items.*.sku"]),
+        exclude: None,
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -640,6 +644,10 @@ fn test_response_model_nested_include_exclude() {
             "password_hash": "secret",
             "email": "test@example.com"
         },
+        "items": [
+            {"sku": "A-1", "qty": 2, "secret": "x"},
+            {"sku": "B-2", "qty": 1, "secret": "y"}
+        ],
         "total": 99.99,
         "status": "pending"
     });
@@ -647,19 +655,163 @@ fn test_response_model_nested_include_exclude() {
     let result = options.apply(value);
     let obj = result.as_object().unwrap();
 
-    // Should have order_id and customer (not excluded)
     assert!(obj.contains_key("order_id"));
     assert!(obj.contains_key("customer"));
-    // total and status should be excluded
+    assert!(obj.contains_key("items"));
     assert!(!obj.contains_key("total"));
     assert!(!obj.contains_key("status"));
 
-    // Nested: customer should have id, username, email but not password_hash
+    let customer = obj.get("customer").unwrap().as_object().unwrap();
+    assert!(!customer.contains_key("id"));
+    assert!(!customer.contains_key("username"));
+    assert!(!customer.contains_key("password_hash"));
+    assert_eq!(customer.get("email").unwrap(), "test@example.com");
+
+    let items = obj.get("items").unwrap().as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    for item in items {
+        let item = item.as_object().unwrap();
+        assert!(item.contains_key("sku"));
+        assert!(!item.contains_key("qty"));
+        assert!(!item.contains_key("secret"));
+    }
+}
+
+#[test]
+fn test_response_model_nested_include_parent_field_keeps_subtree() {
+    let options = ultraapi::ResponseModelOptions {
+        include: Some(&["order_id", "customer", "items.*.sku"]),
+        exclude: None,
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
+        content_type: None,
+    };
+
+    let value = ultraapi::serde_json::json!({
+        "order_id": 321,
+        "customer": {
+            "id": 10,
+            "email": "parent@example.com",
+            "password_hash": "keep-me"
+        },
+        "items": [
+            {"sku": "A-1", "qty": 2, "internal_code": "x"},
+            {"sku": "B-2", "qty": 1, "internal_code": "y"}
+        ],
+        "status": "pending"
+    });
+
+    let result = options.apply(value);
+    let obj = result.as_object().unwrap();
+
+    assert_eq!(obj.get("order_id"), Some(&ultraapi::serde_json::json!(321)));
+
+    let customer = obj.get("customer").unwrap().as_object().unwrap();
+    assert_eq!(customer.get("id"), Some(&ultraapi::serde_json::json!(10)));
+    assert_eq!(
+        customer.get("email"),
+        Some(&ultraapi::serde_json::json!("parent@example.com"))
+    );
+    assert_eq!(
+        customer.get("password_hash"),
+        Some(&ultraapi::serde_json::json!("keep-me"))
+    );
+
+    let items = obj.get("items").unwrap().as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    for item in items {
+        let item = item.as_object().unwrap();
+        assert!(item.contains_key("sku"));
+        assert!(!item.contains_key("qty"));
+        assert!(!item.contains_key("internal_code"));
+    }
+
+    assert!(!obj.contains_key("status"));
+}
+
+#[test]
+fn test_response_model_nested_include_array_wildcard_keeps_item_subtree() {
+    let options = ultraapi::ResponseModelOptions {
+        include: Some(&["order_id", "items.*"]),
+        exclude: None,
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
+        content_type: None,
+    };
+
+    let value = ultraapi::serde_json::json!({
+        "order_id": 777,
+        "items": [
+            {"sku": "A-1", "qty": 2, "internal_code": "x"},
+            {"sku": "B-2", "qty": 1, "internal_code": "y"}
+        ],
+        "status": "pending"
+    });
+
+    let result = options.apply(value);
+    let obj = result.as_object().unwrap();
+
+    assert_eq!(obj.get("order_id"), Some(&ultraapi::serde_json::json!(777)));
+    assert!(!obj.contains_key("status"));
+
+    let items = obj.get("items").unwrap().as_array().unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[0],
+        ultraapi::serde_json::json!({"sku": "A-1", "qty": 2, "internal_code": "x"})
+    );
+    assert_eq!(
+        items[1],
+        ultraapi::serde_json::json!({"sku": "B-2", "qty": 1, "internal_code": "y"})
+    );
+}
+
+#[test]
+fn test_response_model_nested_exclude_with_array_wildcard() {
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: Some(&["customer.password_hash", "items.*.secret", "internal_note"]),
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
+        content_type: None,
+    };
+
+    let value = ultraapi::serde_json::json!({
+        "order_id": 555,
+        "customer": {
+            "id": 1,
+            "email": "alice@example.com",
+            "password_hash": "hidden"
+        },
+        "items": [
+            {"sku": "A-1", "secret": "x"},
+            {"sku": "B-2", "secret": "y"}
+        ],
+        "internal_note": "private"
+    });
+
+    let result = options.apply(value);
+    let obj = result.as_object().unwrap();
+
+    assert!(!obj.contains_key("internal_note"));
+
     let customer = obj.get("customer").unwrap().as_object().unwrap();
     assert!(customer.contains_key("id"));
-    assert!(customer.contains_key("username"));
-    assert!(!customer.contains_key("password_hash"));
     assert!(customer.contains_key("email"));
+    assert!(!customer.contains_key("password_hash"));
+
+    let items = obj.get("items").unwrap().as_array().unwrap();
+    for item in items {
+        let item = item.as_object().unwrap();
+        assert!(item.contains_key("sku"));
+        assert!(!item.contains_key("secret"));
+    }
 }
 
 #[test]
@@ -668,6 +820,9 @@ fn test_response_model_array_handling() {
         include: Some(&["id", "name"]),
         exclude: None,
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -701,6 +856,9 @@ fn test_response_model_by_alias() {
         include: None,
         exclude: None,
         by_alias: true,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -739,11 +897,185 @@ fn test_response_model_empty_options() {
 }
 
 #[test]
+fn test_response_model_exclude_none_filters_null_fields() {
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: false,
+        exclude_none: true,
+        exclude_unset: false,
+        exclude_defaults: false,
+        content_type: None,
+    };
+
+    let value = ultraapi::serde_json::json!({
+        "id": 1,
+        "name": "Test",
+        "nickname": null,
+        "profile": {
+            "bio": null,
+            "city": "Tokyo"
+        }
+    });
+
+    let result = options.apply(value);
+    let obj = result.as_object().unwrap();
+
+    assert!(obj.contains_key("id"));
+    assert!(obj.contains_key("name"));
+    assert!(!obj.contains_key("nickname"));
+
+    let profile = obj.get("profile").unwrap().as_object().unwrap();
+    assert!(!profile.contains_key("bio"));
+    assert_eq!(profile.get("city").unwrap(), "Tokyo");
+}
+
+#[test]
+fn test_response_model_exclude_unset_keeps_explicit_null_and_empty_containers() {
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: true,
+        exclude_defaults: false,
+        content_type: None,
+    };
+
+    let value = ultraapi::serde_json::json!({
+        "id": 1,
+        "name": "Test",
+        "nickname": null,
+        "tags": [],
+        "meta": {}
+    });
+
+    let result = options.apply(value);
+    let obj = result.as_object().unwrap();
+
+    assert!(obj.contains_key("id"));
+    assert!(obj.contains_key("name"));
+    assert_eq!(
+        obj.get("nickname"),
+        Some(&ultraapi::serde_json::Value::Null)
+    );
+    assert_eq!(obj.get("tags"), Some(&ultraapi::serde_json::json!([])));
+    assert_eq!(obj.get("meta"), Some(&ultraapi::serde_json::json!({})));
+}
+
+#[test]
+fn test_response_model_exclude_defaults_without_metadata_keeps_values() {
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: true,
+        content_type: None,
+    };
+
+    let value = ultraapi::serde_json::json!({
+        "id": 0,
+        "name": "",
+        "enabled": false,
+        "score": 0.0,
+        "empty_list": [],
+        "empty_obj": {},
+        "present": "value",
+        "active": true,
+        "count": 3
+    });
+
+    let result = options.apply(value.clone());
+    assert_eq!(result, value);
+}
+
+fn default_enabled_true() -> bool {
+    true
+}
+
+fn default_retry_count() -> i64 {
+    5
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct FieldAwareDefaultsResponse {
+    #[serde(default = "default_enabled_true")]
+    enabled: bool,
+    #[serde(default = "default_retry_count")]
+    retry_count: i64,
+    #[serde(default)]
+    tags: Vec<String>,
+    required_flag: bool,
+}
+
+#[test]
+fn test_response_model_exclude_defaults_uses_api_model_field_defaults() {
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: true,
+        content_type: None,
+    };
+
+    let value = ultraapi::serde_json::json!({
+        "enabled": true,
+        "retry_count": 5,
+        "tags": [],
+        "required_flag": false
+    });
+
+    let result = options.apply_with_aliases(value, Some("FieldAwareDefaultsResponse"), false);
+    let obj = result.as_object().unwrap();
+
+    // Declared defaults should be removed.
+    assert!(obj.get("enabled").is_none());
+    assert!(obj.get("retry_count").is_none());
+    assert!(obj.get("tags").is_none());
+    // Required field has no default metadata; falsy values should be retained.
+    assert_eq!(
+        obj.get("required_flag"),
+        Some(&ultraapi::serde_json::json!(false))
+    );
+
+    let non_default_value = ultraapi::serde_json::json!({
+        "enabled": false,
+        "retry_count": 3,
+        "tags": ["x"],
+        "required_flag": false
+    });
+
+    let non_default_result =
+        options.apply_with_aliases(non_default_value, Some("FieldAwareDefaultsResponse"), false);
+    let non_default_obj = non_default_result.as_object().unwrap();
+    assert_eq!(
+        non_default_obj.get("enabled"),
+        Some(&ultraapi::serde_json::json!(false))
+    );
+    assert_eq!(
+        non_default_obj.get("retry_count"),
+        Some(&ultraapi::serde_json::json!(3))
+    );
+    assert_eq!(
+        non_default_obj.get("tags"),
+        Some(&ultraapi::serde_json::json!(["x"]))
+    );
+}
+
+#[test]
 fn test_response_model_no_matching_include() {
     let options = ultraapi::ResponseModelOptions {
         include: Some(&["nonexistent"]),
         exclude: None,
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -765,6 +1097,9 @@ fn test_response_model_all_excluded() {
         include: None,
         exclude: Some(&["id", "name", "everything"]),
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -791,6 +1126,9 @@ fn test_apply_with_aliases_by_alias_true() {
         include: None,
         exclude: None,
         by_alias: true,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -821,6 +1159,9 @@ fn test_apply_with_aliases_by_alias_false() {
         include: None,
         exclude: None,
         by_alias: false,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -855,6 +1196,9 @@ fn test_apply_with_aliases_include_by_alias_true() {
         include: Some(&["user_id", "display_name"]),
         exclude: None,
         by_alias: true,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -892,6 +1236,9 @@ fn test_apply_with_aliases_exclude_by_alias_true() {
         include: None,
         exclude: Some(&["password_hash"]),
         by_alias: true,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -928,6 +1275,9 @@ fn test_apply_with_aliases_nested() {
         include: None,
         exclude: None,
         by_alias: true,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -968,6 +1318,9 @@ fn test_apply_with_aliases_array() {
         include: None,
         exclude: None,
         by_alias: true,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -993,6 +1346,9 @@ fn test_apply_with_aliases_no_type_matching() {
         include: None,
         exclude: None,
         by_alias: true,
+        exclude_none: false,
+        exclude_unset: false,
+        exclude_defaults: false,
         content_type: None,
     };
 
@@ -1009,5 +1365,343 @@ fn test_apply_with_aliases_no_type_matching() {
     assert!(
         obj.contains_key("user_id"),
         "Should keep field name when no alias mapping found"
+    );
+}
+
+// ============================================================================
+// Mixed serde + custom attribute tests (P3-3)
+// ============================================================================
+
+// ---- Test: serde(rename) + custom #[skip_serializing] on same struct ----
+
+#[api_model]
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct MixedRenameSkipSer {
+    #[serde(rename = "userId")]
+    user_id: i64,
+    #[skip_serializing]
+    secret: String,
+    visible: String,
+}
+
+#[test]
+fn test_mixed_serde_rename_and_custom_skip_serializing() {
+    let val = MixedRenameSkipSer {
+        user_id: 42,
+        secret: "hidden".into(),
+        visible: "shown".into(),
+    };
+    let json = ultraapi::serde_json::to_string(&val).unwrap();
+    // rename should work
+    assert!(json.contains("\"userId\":42"), "rename failed: {json}");
+    assert!(!json.contains("\"user_id\""), "rename not applied: {json}");
+    // skip_serializing should work
+    assert!(!json.contains("secret"), "skip_serializing failed: {json}");
+    assert!(json.contains("\"visible\":\"shown\""));
+}
+
+// ---- Test: serde(rename) + custom #[read_only] on the same field ----
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct RenameWithReadOnly {
+    #[serde(rename = "itemId")]
+    #[read_only]
+    item_id: i64,
+    name: String,
+}
+
+#[test]
+fn test_serde_rename_combined_with_read_only() {
+    // read_only → skip_deserializing: field should serialize but not deserialize
+    let val = RenameWithReadOnly {
+        item_id: 99,
+        name: "widget".into(),
+    };
+    let json = ultraapi::serde_json::to_string(&val).unwrap();
+    assert!(
+        json.contains("\"itemId\":99"),
+        "rename+read_only ser: {json}"
+    );
+
+    // Deserialize without the read_only field — should succeed with default
+    let parsed: RenameWithReadOnly =
+        ultraapi::serde_json::from_str(r#"{"name":"gadget"}"#).unwrap();
+    assert_eq!(parsed.item_id, 0); // default
+    assert_eq!(parsed.name, "gadget");
+}
+
+// ---- Test: serde(rename) + custom #[write_only] on the same field ----
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct RenameWithWriteOnly {
+    id: i64,
+    #[serde(rename = "secretToken")]
+    #[write_only]
+    secret_token: String,
+}
+
+#[test]
+fn test_serde_rename_combined_with_write_only() {
+    // write_only → skip_serializing: field accepted on input, hidden on output
+    let val = RenameWithWriteOnly {
+        id: 1,
+        secret_token: "abc123".into(),
+    };
+    let json = ultraapi::serde_json::to_string(&val).unwrap();
+    assert!(
+        !json.contains("secretToken"),
+        "write_only should hide: {json}"
+    );
+    assert!(
+        !json.contains("secret_token"),
+        "write_only should hide: {json}"
+    );
+
+    // Should still deserialize via the renamed key
+    let parsed: RenameWithWriteOnly =
+        ultraapi::serde_json::from_str(r#"{"id":2,"secretToken":"xyz"}"#).unwrap();
+    assert_eq!(parsed.id, 2);
+    assert_eq!(parsed.secret_token, "xyz");
+}
+
+// ---- Test: serde(default) + custom #[skip_serializing] (passthrough preservation) ----
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct DefaultWithSkipSer {
+    id: i64,
+    #[serde(default)]
+    #[skip_serializing]
+    cached: String,
+}
+
+#[test]
+fn test_serde_default_preserved_with_custom_skip_ser() {
+    // serde(default) should be preserved so deserialization works without field
+    let parsed: DefaultWithSkipSer = ultraapi::serde_json::from_str(r#"{"id":5}"#).unwrap();
+    assert_eq!(parsed.id, 5);
+    assert_eq!(parsed.cached, ""); // default empty string
+
+    // skip_serializing should hide the field
+    let val = DefaultWithSkipSer {
+        id: 5,
+        cached: "data".into(),
+    };
+    let json = ultraapi::serde_json::to_string(&val).unwrap();
+    assert!(
+        !json.contains("cached"),
+        "skip_ser should hide cached: {json}"
+    );
+}
+
+// ---- Test: serde(rename) on one field + custom #[alias] on another ----
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct MixedRenameAlias {
+    #[serde(rename = "externalId")]
+    external_id: i64,
+    #[alias("displayLabel")]
+    display_label: String,
+}
+
+#[test]
+fn test_serde_rename_and_custom_alias_coexist() {
+    let val = MixedRenameAlias {
+        external_id: 10,
+        display_label: "hello".into(),
+    };
+    let json = ultraapi::serde_json::to_string(&val).unwrap();
+    assert!(json.contains("\"externalId\":10"), "serde rename: {json}");
+    assert!(
+        json.contains("\"displayLabel\":\"hello\""),
+        "custom alias: {json}"
+    );
+    assert!(!json.contains("\"external_id\""));
+    assert!(!json.contains("\"display_label\""));
+
+    // Deserialize with renamed keys
+    let parsed: MixedRenameAlias =
+        ultraapi::serde_json::from_str(r#"{"externalId":20,"displayLabel":"world"}"#).unwrap();
+    assert_eq!(parsed.external_id, 20);
+    assert_eq!(parsed.display_label, "world");
+
+    // Schema should use renamed keys
+    let schemas: Vec<_> = inventory::iter::<ultraapi::SchemaInfo>().collect();
+    let info = schemas
+        .iter()
+        .find(|s| s.name == "MixedRenameAlias")
+        .unwrap();
+    let schema = (info.schema_fn)();
+    assert!(schema.properties.contains_key("externalId"));
+    assert!(schema.properties.contains_key("displayLabel"));
+}
+
+// ---- Test: serde(skip) coexists with serde(rename) on different fields ----
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct SkipAndRename {
+    #[serde(rename = "userName")]
+    user_name: String,
+    #[serde(skip)]
+    cache_key: String,
+    visible: bool,
+}
+
+#[test]
+fn test_serde_skip_and_rename_different_fields() {
+    let val = SkipAndRename {
+        user_name: "alice".into(),
+        cache_key: "k123".into(),
+        visible: true,
+    };
+    let json = ultraapi::serde_json::to_string(&val).unwrap();
+    assert!(json.contains("\"userName\":\"alice\""));
+    assert!(!json.contains("cache_key"));
+    assert!(json.contains("\"visible\":true"));
+
+    let parsed: SkipAndRename =
+        ultraapi::serde_json::from_str(r#"{"userName":"bob","visible":false}"#).unwrap();
+    assert_eq!(parsed.user_name, "bob");
+    assert_eq!(parsed.cache_key, ""); // default from skip
+    assert!(!parsed.visible);
+}
+
+// ---- Test: serde(rename) + serde(default) + #[skip_deserializing] all on same field ----
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct TripleCombo {
+    id: i64,
+    #[serde(rename = "computedScore", default)]
+    #[skip_deserializing]
+    computed_score: f64,
+}
+
+#[test]
+fn test_triple_combo_rename_default_skip_deser() {
+    let val = TripleCombo {
+        id: 1,
+        computed_score: 99.5,
+    };
+    let json = ultraapi::serde_json::to_string(&val).unwrap();
+    // Should serialize with renamed key
+    assert!(json.contains("\"computedScore\":99.5"), "ser: {json}");
+
+    // Should deserialize without the field (skip_deserializing + default)
+    let parsed: TripleCombo = ultraapi::serde_json::from_str(r#"{"id":2}"#).unwrap();
+    assert_eq!(parsed.id, 2);
+    assert_eq!(parsed.computed_score, 0.0); // f64 default
+}
+
+#[api_model]
+#[derive(Debug, Clone, Default)]
+struct ExcludeUnsetNestedModel {
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    labels: Vec<String>,
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct ExcludeUnsetRootModel {
+    id: i64,
+    #[serde(default)]
+    nickname: Option<String>,
+    #[serde(default)]
+    nested: ExcludeUnsetNestedModel,
+}
+
+#[test]
+fn test_apply_with_field_set_excludes_unset_fields_for_api_model() {
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: true,
+        exclude_defaults: false,
+        content_type: None,
+    };
+
+    let serialized = ultraapi::serde_json::json!({
+        "id": 10,
+        "nickname": null,
+        "nested": {
+            "note": null,
+            "labels": []
+        }
+    });
+    let request_payload = ultraapi::serde_json::json!({
+        "id": 10,
+        "nested": {}
+    });
+    let field_set = ultraapi::collect_present_field_paths(&request_payload);
+
+    let result = options.apply_with_aliases_and_field_set(
+        serialized,
+        Some("ExcludeUnsetRootModel"),
+        false,
+        Some(&field_set),
+    );
+
+    assert_eq!(
+        result,
+        ultraapi::serde_json::json!({"id": 10, "nested": {}})
+    );
+}
+
+#[test]
+fn test_apply_with_field_set_keeps_explicit_null_and_empty_values_for_api_model() {
+    let options = ultraapi::ResponseModelOptions {
+        include: None,
+        exclude: None,
+        by_alias: false,
+        exclude_none: false,
+        exclude_unset: true,
+        exclude_defaults: false,
+        content_type: None,
+    };
+
+    let serialized = ultraapi::serde_json::json!({
+        "id": 11,
+        "nickname": null,
+        "nested": {
+            "note": null,
+            "labels": []
+        }
+    });
+    let request_payload = ultraapi::serde_json::json!({
+        "id": 11,
+        "nickname": null,
+        "nested": {
+            "note": null,
+            "labels": []
+        }
+    });
+    let field_set = ultraapi::collect_present_field_paths(&request_payload);
+
+    let result = options.apply_with_aliases_and_field_set(
+        serialized,
+        Some("ExcludeUnsetRootModel"),
+        false,
+        Some(&field_set),
+    );
+
+    assert_eq!(
+        result,
+        ultraapi::serde_json::json!({
+            "id": 11,
+            "nickname": null,
+            "nested": {
+                "note": null,
+                "labels": []
+            }
+        })
     );
 }

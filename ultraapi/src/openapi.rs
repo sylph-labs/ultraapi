@@ -378,11 +378,23 @@ impl Serialize for Operation {
                 serde_json::Value::String(r.description.clone()),
             );
             if let Some(ct) = &r.content_type {
-                let content = serde_json::json!({
-                    ct: {
-                        "schema": r.schema_ref.clone().unwrap_or(serde_json::Value::Null)
-                    }
-                });
+                let content = if let Some(schema_ref) = &r.schema_ref {
+                    serde_json::json!({
+                        ct: {
+                            "schema": schema_ref
+                        }
+                    })
+                } else if ct == "application/json" {
+                    serde_json::json!({
+                        ct: {
+                            "schema": serde_json::Value::Null
+                        }
+                    })
+                } else {
+                    serde_json::json!({
+                        ct: {}
+                    })
+                };
                 obj.insert("content".into(), content);
             } else if let Some(schema_ref) = &r.schema_ref {
                 let content = serde_json::json!({
@@ -391,6 +403,12 @@ impl Serialize for Operation {
                     }
                 });
                 obj.insert("content".into(), content);
+            }
+            if !r.headers.is_empty() {
+                obj.insert(
+                    "headers".into(),
+                    serde_json::to_value(&r.headers).unwrap_or_else(|_| serde_json::json!({})),
+                );
             }
             resp.insert(code.clone(), serde_json::Value::Object(obj));
         }
@@ -408,6 +426,14 @@ pub struct Parameter {
     pub schema: SchemaObject,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explode: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub example: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub examples: Option<&'static [(&'static str, &'static str)]>,
 }
 
 /// Dynamic parameter (owned strings, for query params generated at runtime)
@@ -418,6 +444,10 @@ pub struct DynParameter {
     pub required: bool,
     pub schema_type: String,
     pub description: Option<String>,
+    pub style: Option<String>,
+    pub explode: Option<bool>,
+    pub example: Option<serde_json::Value>,
+    pub examples: Option<serde_json::Map<String, serde_json::Value>>,
     pub minimum: Option<f64>,
     pub maximum: Option<f64>,
     pub min_length: Option<u32>,
@@ -451,6 +481,18 @@ impl Serialize for DynParameter {
         map.serialize_entry("schema", &schema)?;
         if let Some(desc) = &self.description {
             map.serialize_entry("description", desc)?;
+        }
+        if let Some(style) = &self.style {
+            map.serialize_entry("style", style)?;
+        }
+        if let Some(explode) = self.explode {
+            map.serialize_entry("explode", &explode)?;
+        }
+        if let Some(example) = &self.example {
+            map.serialize_entry("example", example)?;
+        }
+        if let Some(examples) = &self.examples {
+            map.serialize_entry("examples", examples)?;
         }
         map.end()
     }
@@ -493,12 +535,21 @@ impl RequestBody {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct HeaderDef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub schema: SchemaObject,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ResponseDef {
     pub description: String,
     #[serde(skip)]
     pub schema_ref: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub headers: HashMap<String, HeaderDef>,
 }
 
 /// Discriminator for oneOf schemas
@@ -601,6 +652,8 @@ pub struct Property {
     pub read_only: bool,
     /// Mark field as write-only: included in requests but not in responses
     pub write_only: bool,
+    /// Mark field as deprecated
+    pub deprecated: bool,
 }
 
 impl Property {
@@ -665,6 +718,9 @@ impl Property {
         if self.write_only {
             obj.insert("writeOnly".into(), serde_json::Value::Bool(true));
         }
+        if self.deprecated {
+            obj.insert("deprecated".into(), serde_json::Value::Bool(true));
+        }
 
         serde_json::Value::Object(obj)
     }
@@ -719,6 +775,7 @@ pub struct PropertyPatch {
     pub example: Option<String>,
     pub read_only: Option<bool>,
     pub write_only: Option<bool>,
+    pub deprecated: Option<bool>,
 }
 
 /// Result of schema_from_schemars: the main schema + any nested definitions
@@ -807,6 +864,10 @@ pub fn query_params_from_schema(root: &schemars::schema::RootSchema) -> Vec<DynP
                 required: required_set.contains(name),
                 schema_type: type_name,
                 description,
+                style: None,
+                explode: None,
+                example: None,
+                examples: None,
                 minimum: constraints.0,
                 maximum: constraints.1,
                 min_length: constraints.2,
@@ -966,12 +1027,13 @@ fn schema_deprecated(schema: &schemars::schema::Schema) -> bool {
     }
 }
 
-/// Extract all metadata from schemars schema at once (description, read_only, write_only)
-fn schema_metadata(schema: &schemars::schema::Schema) -> (Option<String>, bool, bool) {
+/// Extract all metadata from schemars schema at once
+fn schema_metadata(schema: &schemars::schema::Schema) -> (Option<String>, bool, bool, bool) {
     let description = schema_description(schema);
     let read_only = schema_read_only(schema);
     let write_only = schema_write_only(schema);
-    (description, read_only, write_only)
+    let deprecated = schema_deprecated(schema);
+    (description, read_only, write_only, deprecated)
 }
 
 fn schema_type_string(schema: &schemars::schema::Schema) -> String {
@@ -1033,6 +1095,7 @@ pub fn multipart_placeholder_schema() -> Schema {
             additional_properties: None,
             read_only: false,
             write_only: false,
+            deprecated: false,
         },
     );
     properties.insert(
@@ -1054,6 +1117,7 @@ pub fn multipart_placeholder_schema() -> Schema {
             additional_properties: None,
             read_only: false,
             write_only: false,
+            deprecated: false,
         },
     );
     Schema {
@@ -1061,6 +1125,162 @@ pub fn multipart_placeholder_schema() -> Schema {
         properties,
         required: vec![],
         description: Some("Multipart form-data request body placeholder".to_string()),
+        enum_values: None,
+        example: None,
+        one_of: None,
+        discriminator: None,
+    }
+}
+
+/// Generate FastAPI-compatible ValidationError schema
+pub fn validation_error_schema() -> Schema {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "loc".to_string(),
+        Property {
+            type_name: "array".to_string(),
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Error location".to_string()),
+            ref_path: None,
+            items: Some(Box::new(Property {
+                type_name: "string".to_string(),
+                format: None,
+                min_length: None,
+                max_length: None,
+                minimum: None,
+                maximum: None,
+                pattern: None,
+                min_items: None,
+                description: None,
+                ref_path: None,
+                items: None,
+                nullable: false,
+                example: None,
+                additional_properties: None,
+                read_only: false,
+                write_only: false,
+                deprecated: false,
+            })),
+            nullable: false,
+            example: None,
+            additional_properties: None,
+            read_only: false,
+            write_only: false,
+            deprecated: false,
+        },
+    );
+    properties.insert(
+        "msg".to_string(),
+        Property {
+            type_name: "string".to_string(),
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Error message".to_string()),
+            ref_path: None,
+            items: None,
+            nullable: false,
+            example: None,
+            additional_properties: None,
+            read_only: false,
+            write_only: false,
+            deprecated: false,
+        },
+    );
+    properties.insert(
+        "type".to_string(),
+        Property {
+            type_name: "string".to_string(),
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Error type".to_string()),
+            ref_path: None,
+            items: None,
+            nullable: false,
+            example: None,
+            additional_properties: None,
+            read_only: false,
+            write_only: false,
+            deprecated: false,
+        },
+    );
+
+    Schema {
+        type_name: "object".to_string(),
+        properties,
+        required: vec!["loc".to_string(), "msg".to_string(), "type".to_string()],
+        description: Some("Validation error item".to_string()),
+        enum_values: None,
+        example: None,
+        one_of: None,
+        discriminator: None,
+    }
+}
+
+/// Generate FastAPI-compatible HTTPValidationError schema
+pub fn http_validation_error_schema() -> Schema {
+    let mut properties = HashMap::new();
+    properties.insert(
+        "detail".to_string(),
+        Property {
+            type_name: "array".to_string(),
+            format: None,
+            min_length: None,
+            max_length: None,
+            minimum: None,
+            maximum: None,
+            pattern: None,
+            min_items: None,
+            description: Some("Validation errors".to_string()),
+            ref_path: None,
+            items: Some(Box::new(Property {
+                type_name: "object".to_string(),
+                format: None,
+                min_length: None,
+                max_length: None,
+                minimum: None,
+                maximum: None,
+                pattern: None,
+                min_items: None,
+                description: None,
+                ref_path: Some("#/components/schemas/ValidationError".to_string()),
+                items: None,
+                nullable: false,
+                example: None,
+                additional_properties: None,
+                read_only: false,
+                write_only: false,
+                deprecated: false,
+            })),
+            nullable: false,
+            example: None,
+            additional_properties: None,
+            read_only: false,
+            write_only: false,
+            deprecated: false,
+        },
+    );
+
+    Schema {
+        type_name: "object".to_string(),
+        properties,
+        required: vec!["detail".to_string()],
+        description: Some("Validation error response".to_string()),
         enum_values: None,
         example: None,
         one_of: None,
@@ -1090,6 +1310,7 @@ pub fn api_error_schema() -> Schema {
             additional_properties: None,
             read_only: false,
             write_only: false,
+            deprecated: false,
         },
     );
     properties.insert(
@@ -1122,12 +1343,14 @@ pub fn api_error_schema() -> Schema {
                 additional_properties: None,
                 read_only: false,
                 write_only: false,
+                deprecated: false,
             })),
             nullable: false,
             example: None,
             additional_properties: None,
             read_only: false,
             write_only: false,
+            deprecated: false,
         },
     );
     Schema {
@@ -1147,8 +1370,8 @@ fn property_from_schemars_schema(
     schema: &schemars::schema::Schema,
     definitions: &schemars::Map<String, schemars::schema::Schema>,
 ) -> Property {
-    // Extract metadata (description, read_only, write_only) from schema
-    let (description, read_only, write_only) = schema_metadata(schema);
+    // Extract metadata (description, read_only, write_only, deprecated) from schema
+    let (description, read_only, write_only, deprecated) = schema_metadata(schema);
 
     match schema {
         schemars::schema::Schema::Object(obj) => {
@@ -1171,6 +1394,7 @@ fn property_from_schemars_schema(
                     additional_properties: None,
                     read_only: false,
                     write_only: false,
+                    deprecated: false,
                 };
             }
 
@@ -1233,6 +1457,7 @@ fn property_from_schemars_schema(
                                 additional_properties: None,
                                 read_only,
                                 write_only,
+                                deprecated,
                             };
                         }
                         tn
@@ -1274,6 +1499,7 @@ fn property_from_schemars_schema(
                                         additional_properties: None,
                                         read_only: false,
                                         write_only: false,
+                                        deprecated: false,
                                     };
                                 }
                             }
@@ -1303,6 +1529,7 @@ fn property_from_schemars_schema(
                                 additional_properties: Some(Box::new(ap_prop)),
                                 read_only,
                                 write_only,
+                                deprecated,
                             };
                         }
                     }
@@ -1340,6 +1567,7 @@ fn property_from_schemars_schema(
                         additional_properties: None,
                         read_only,
                         write_only,
+                        deprecated,
                     };
                 }
 
@@ -1360,6 +1588,7 @@ fn property_from_schemars_schema(
                     additional_properties: None,
                     read_only,
                     write_only,
+                    deprecated,
                 };
             }
 
@@ -1380,6 +1609,7 @@ fn property_from_schemars_schema(
                 additional_properties: None,
                 read_only,
                 write_only,
+                deprecated,
             }
         }
         _ => Property {
@@ -1399,6 +1629,7 @@ fn property_from_schemars_schema(
             additional_properties: None,
             read_only: false,
             write_only: false,
+            deprecated: false,
         },
     }
 }

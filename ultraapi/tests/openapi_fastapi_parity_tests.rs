@@ -4,6 +4,8 @@
 
 use serde_json::Value;
 use ultraapi::axum;
+use ultraapi::axum_extra::headers::authorization::Bearer;
+use ultraapi::axum_extra::headers::Authorization;
 use ultraapi::prelude::*;
 
 // --- Test API Models ---
@@ -48,6 +50,22 @@ struct ListResponse {
     items: Vec<Item>,
     total: i64,
     page: i64,
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct AuthContextResponse {
+    user_id: i64,
+    session_present: bool,
+    internal_note: String,
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct OptionalProfile {
+    id: i64,
+    display_name: Option<String>,
+    bio: Option<String>,
 }
 
 // --- Test Endpoints ---
@@ -108,12 +126,64 @@ async fn delete_item(id: i64) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Header/Cookie extractor + response_model exclude parity case
+#[get("/parity/auth-context")]
+#[tag("parity")]
+#[response_model(exclude = {"internal_note"})]
+async fn parity_auth_context(
+    auth: TypedHeader<Authorization<Bearer>>,
+    cookies: CookieJar,
+) -> AuthContextResponse {
+    let has_session = cookies.get("session_id").is_some();
+    AuthContextResponse {
+        user_id: if auth.token() == "demo" { 1 } else { 0 },
+        session_present: has_session,
+        internal_note: "only for internal tracing".into(),
+    }
+}
+
+/// response_model exclude_none parity case
+#[get("/parity/response-model/exclude-none")]
+#[tag("parity")]
+#[response_model(exclude_none = true)]
+async fn parity_response_model_exclude_none() -> OptionalProfile {
+    OptionalProfile {
+        id: 1,
+        display_name: Some("Parity User".into()),
+        bio: None,
+    }
+}
+
+#[get("/parity/security/and-or")]
+#[tag("parity")]
+#[security("bearer&&apiKeyAuth")]
+#[security("oauth2AuthCode:read")]
+async fn parity_security_and_or() -> String {
+    "security parity".into()
+}
+
 // --- App Builder ---
 
 fn build_test_app() -> UltraApiApp {
     // Routes are automatically registered via #[get], #[post], etc. macros
     // The into_router() call collects all registered routes
-    UltraApiApp::new().title("Parity Test API").version("0.1.0")
+    UltraApiApp::new()
+        .title("Parity Test API")
+        .version("0.1.0")
+        .bearer_auth()
+        .security_scheme(
+            "apiKeyAuth",
+            ultraapi::openapi::SecurityScheme::ApiKey {
+                name: "X-API-Key".to_string(),
+                location: "header".to_string(),
+            },
+        )
+        .oauth2_authorization_code(
+            "oauth2AuthCode",
+            "https://example.com/authorize",
+            "https://example.com/token",
+            [("read", "Read access")],
+        )
 }
 
 // --- Helper Functions for Golden Comparison ---
@@ -300,8 +370,8 @@ async fn test_openapi_fastapi_parity_regenerate() {
     println!("Updated golden file at ultraapi/tests/golden/openapi_fastapi_parity.json");
 }
 
-/// Test that validates specific FastAPI parity aspects
-/// This test always runs and validates specific known differences from FastAPI
+/// Test that validates specific FastAPI parity aspects.
+/// This test runs strict assertions for validation keyword parity.
 #[tokio::test]
 async fn test_fastapi_parity_specific_validations() {
     // Build and spawn the test app
@@ -383,23 +453,26 @@ async fn test_fastapi_parity_specific_validations() {
             .as_object()
             .expect("properties should exist");
 
-        // name should have minLength/maxLength
+        // name should have minLength/maxLength on the field schema itself (FastAPI parity)
         if let Some(name) = props.get("name") {
             assert_eq!(name["type"], "string", "name should be string type");
-            // Note: UltraAPI may output minLength/maxLength differently than FastAPI
-            // Known difference: FastAPI uses "minLength" and "maxLength" directly on schema
-            // UltraAPI may use different representation - this is a known parity difference
+            assert_eq!(name["minLength"], 1, "name.minLength should be emitted");
+            assert_eq!(name["maxLength"], 100, "name.maxLength should be emitted");
         }
 
         // price should have minimum
         if let Some(price) = props.get("price") {
             assert_eq!(price["type"], "number", "price should be number type");
+            assert_eq!(price["minimum"], 0.0, "price.minimum should be emitted");
         }
 
         // code should have pattern
         if let Some(code) = props.get("code") {
             assert_eq!(code["type"], "string", "code should be string type");
-            // Note: pattern validation - FastAPI uses "pattern", UltraAPI may differ
+            assert_eq!(
+                code["pattern"], "^[A-Z]{3}$",
+                "code.pattern should be emitted"
+            );
         }
     }
 
@@ -407,6 +480,65 @@ async fn test_fastapi_parity_specific_validations() {
     let get_item_resp =
         get_item["responses"]["200"]["content"]["application/json"]["schema"].as_object();
     assert!(get_item_resp.is_some(), "GET should have response schema");
+
+    // 6. Header/Cookie parameter parity cases should appear in OpenAPI
+    let parity_auth = paths["/parity/auth-context"]["get"]
+        .as_object()
+        .expect("GET /parity/auth-context should exist");
+    let parity_params = parity_auth["parameters"]
+        .as_array()
+        .expect("parity auth parameters should be array");
+
+    let auth_header = parity_params
+        .iter()
+        .find(|p| p["name"] == "authorization")
+        .expect("authorization header param should exist");
+    assert_eq!(auth_header["in"], "header");
+    assert_eq!(auth_header["required"], true);
+
+    let cookie_param = parity_params
+        .iter()
+        .find(|p| p["name"] == "cookies")
+        .expect("cookie param should exist");
+    assert_eq!(cookie_param["in"], "cookie");
+    assert_eq!(cookie_param["required"], false);
+
+    // 7. response_model exclusion routes should still expose response schema refs
+    let exclude_none_op = paths["/parity/response-model/exclude-none"]["get"]
+        .as_object()
+        .expect("GET /parity/response-model/exclude-none should exist");
+    let exclude_none_schema = exclude_none_op["responses"]["200"]["content"]["application/json"]
+        ["schema"]
+        .as_object()
+        .expect("exclude-none route should have schema");
+    assert!(exclude_none_schema.get("$ref").is_some());
+
+    // 8. Security AND/OR parity case should emit OpenAPI requirement objects correctly
+    let security_and_or = paths["/parity/security/and-or"]["get"]["security"]
+        .as_array()
+        .expect("security should be an array");
+    assert_eq!(
+        security_and_or.len(),
+        2,
+        "AND/OR should create two OR branches"
+    );
+
+    let has_bearer_and_api_key = security_and_or
+        .iter()
+        .any(|req| req.get("bearerAuth").is_some() && req.get("apiKeyAuth").is_some());
+    assert!(
+        has_bearer_and_api_key,
+        "first branch should require bearer+api key"
+    );
+
+    let has_oauth_scoped = security_and_or.iter().any(|req| {
+        req.get("oauth2AuthCode")
+            .is_some_and(|scopes| scopes == &serde_json::json!(["read"]))
+    });
+    assert!(
+        has_oauth_scoped,
+        "second branch should require oauth2 read scope"
+    );
 
     println!("FastAPI parity validations passed");
 }

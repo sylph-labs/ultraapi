@@ -1,9 +1,8 @@
 //! BackgroundTasks 結合テスト
 //!
 //! "レスポンスが返った後に task が走る" ことを確認するテスト
-//!
-//! 注: 現時点ではUltraApiAppとの完全な統合はmacroの制限により直接テストできませんが、
-//! response_tasks.rsのユニットテストで基本的な動作は検証済みです。
+//! - 素の axum Router での動作
+//! - UltraApiApp + #[get] ルート経路での E2E 動作
 
 #[cfg(test)]
 mod integration {
@@ -18,6 +17,7 @@ mod integration {
         Router,
     };
     use tower::ServiceExt;
+    use ultraapi::prelude::*;
     use ultraapi::response_tasks::{response_task_middleware, BackgroundTasks};
 
     /// レスポンス送信後にバックグラウンドタスクが実行されることを確認
@@ -122,5 +122,51 @@ mod integration {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[derive(Clone)]
+    struct BackgroundTaskFlag(Arc<AtomicBool>);
+
+    #[get("/e2e/background-tasks")]
+    async fn background_tasks_e2e_route(
+        tasks: BackgroundTasks,
+        flag: Dep<BackgroundTaskFlag>,
+    ) -> &'static str {
+        let executed = flag.0.clone();
+        tasks.add(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            executed.store(true, Ordering::SeqCst);
+        });
+        "queued"
+    }
+
+    /// UltraApiApp + #[get] ルートでもレスポンス後にタスクが実行されることを確認
+    #[tokio::test]
+    async fn test_ultraapi_app_route_runs_background_tasks_after_response() {
+        let executed = Arc::new(AtomicBool::new(false));
+
+        let app = UltraApiApp::new()
+            .dep(BackgroundTaskFlag(executed.clone()))
+            .include(UltraApiRouter::new("").route(__HAYAI_ROUTE_BACKGROUND_TASKS_E2E_ROUTE));
+
+        let response = app
+            .into_router()
+            .oneshot(
+                Request::builder()
+                    .uri("/e2e/background-tasks")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            executed.load(Ordering::SeqCst),
+            "Background task should have run after response via UltraApiApp route"
+        );
     }
 }

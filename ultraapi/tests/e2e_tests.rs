@@ -537,7 +537,11 @@ async fn spawn_router_app() -> String {
 #[tokio::test]
 async fn test_router_e2e_get_prefixed_path() {
     let base = spawn_router_app().await;
-    let resp = reqwest::get(format!("{base}/api/items/e2e-rt-item/42"))
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/api/items/e2e-rt-item/42"))
+        .bearer_auth("valid-token")
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -549,7 +553,11 @@ async fn test_router_e2e_get_prefixed_path() {
 #[tokio::test]
 async fn test_router_e2e_list_prefixed_path() {
     let base = spawn_router_app().await;
-    let resp = reqwest::get(format!("{base}/api/items/e2e-rt-list"))
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{base}/api/items/e2e-rt-list"))
+        .bearer_auth("valid-token")
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
@@ -563,6 +571,7 @@ async fn test_router_e2e_delete_returns_204() {
     let client = reqwest::Client::new();
     let resp = client
         .delete(format!("{base}/api/items/e2e-rt-del/1"))
+        .bearer_auth("valid-token")
         .send()
         .await
         .unwrap();

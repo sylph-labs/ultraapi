@@ -12,6 +12,71 @@ struct User {
     name: String,
 }
 
+#[api_model]
+#[derive(Debug, Clone)]
+struct UserOptional {
+    id: i64,
+    name: String,
+    nickname: Option<String>,
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct RuntimeResponseModelProfile {
+    visits: i64,
+    note: String,
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct RuntimeResponseModelPayload {
+    id: i64,
+    nickname: Option<String>,
+    score: i64,
+    enabled: bool,
+    label: String,
+    profile: RuntimeResponseModelProfile,
+}
+
+fn default_mode() -> String {
+    "standard".to_string()
+}
+
+fn default_max_retries() -> i64 {
+    3
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct RuntimeDeclaredDefaultsPayload {
+    #[serde(default = "default_mode")]
+    mode: String,
+    #[serde(default = "default_max_retries")]
+    max_retries: i64,
+    active: bool,
+}
+
+#[api_model]
+#[derive(Debug, Clone, Default)]
+struct EchoUnsetProfile {
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    labels: Vec<String>,
+}
+
+#[api_model]
+#[derive(Debug, Clone)]
+struct EchoUnsetPayload {
+    id: i64,
+    #[serde(default)]
+    nickname: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    profile: EchoUnsetProfile,
+}
+
 // --- Test 1: Default JSON response (backward compatibility) ---
 
 /// Default JSON endpoint (no response_class specified)
@@ -409,6 +474,29 @@ async fn test_openapi_file_content_type() {
     assert!(response.get("application/json").is_none());
 }
 
+#[tokio::test]
+async fn test_openapi_non_json_media_types_do_not_emit_null_schema() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let spec: serde_json::Value = resp.json().await.unwrap();
+
+    for (path, content_type) in [
+        ("/html", "text/html"),
+        ("/text", "text/plain"),
+        ("/binary", "application/octet-stream"),
+        ("/stream", "application/octet-stream"),
+        ("/xml", "application/xml"),
+        ("/file", "application/octet-stream"),
+    ] {
+        let media = &spec["paths"][path]["get"]["responses"]["200"]["content"][content_type];
+        assert!(
+            media.get("schema") != Some(&serde_json::Value::Null),
+            "{path} emitted invalid schema:null for {content_type}"
+        );
+    }
+}
+
 // --- ResponseClass enum tests ---
 
 #[test]
@@ -440,6 +528,11 @@ fn test_response_class_stream_content_type() {
         ResponseClass::Stream.content_type(),
         "application/octet-stream"
     );
+}
+
+#[test]
+fn test_response_class_sse_content_type() {
+    assert_eq!(ResponseClass::Sse.content_type(), "text/event-stream");
 }
 
 #[test]
@@ -549,6 +642,143 @@ async fn json_custom_content_type() -> User {
     }
 }
 
+#[get("/json/exclude-none")]
+#[response_model(exclude_none = true)]
+async fn json_exclude_none() -> UserOptional {
+    UserOptional {
+        id: 101,
+        name: "Exclude None".into(),
+        nickname: None,
+    }
+}
+
+#[get("/json/exclude-unset")]
+#[response_model(exclude_unset = true)]
+async fn json_exclude_unset() -> serde_json::Value {
+    ultraapi::serde_json::json!({
+        "id": 102,
+        "name": "Exclude Unset",
+        "nickname": null,
+        "tags": [],
+        "meta": {}
+    })
+}
+
+#[get("/json/exclude-defaults")]
+#[response_model(exclude_defaults = true)]
+async fn json_exclude_defaults() -> serde_json::Value {
+    ultraapi::serde_json::json!({
+        "id": 0,
+        "name": "",
+        "enabled": false,
+        "score": 0,
+        "payload": "ok"
+    })
+}
+
+#[get("/json/exclude-unset/model")]
+#[response_model(exclude_unset = true)]
+async fn json_exclude_unset_model() -> RuntimeResponseModelPayload {
+    RuntimeResponseModelPayload {
+        id: 103,
+        nickname: None,
+        score: 0,
+        enabled: false,
+        label: String::new(),
+        profile: RuntimeResponseModelProfile {
+            visits: 0,
+            note: String::new(),
+        },
+    }
+}
+
+#[get("/json/exclude-defaults/model")]
+#[response_model(exclude_defaults = true)]
+async fn json_exclude_defaults_model() -> RuntimeResponseModelPayload {
+    RuntimeResponseModelPayload {
+        id: 104,
+        nickname: None,
+        score: 0,
+        enabled: false,
+        label: String::new(),
+        profile: RuntimeResponseModelProfile {
+            visits: 0,
+            note: String::new(),
+        },
+    }
+}
+
+#[get("/json/exclude-defaults/model/custom")]
+#[response_model(exclude_defaults = true)]
+async fn json_exclude_defaults_model_custom() -> RuntimeDeclaredDefaultsPayload {
+    RuntimeDeclaredDefaultsPayload {
+        mode: default_mode(),
+        max_retries: default_max_retries(),
+        // No declared default metadata for this field, so falsy values are retained.
+        active: false,
+    }
+}
+
+#[post("/json/exclude-unset/echo")]
+#[response_model(exclude_unset = true)]
+async fn json_exclude_unset_echo(payload: EchoUnsetPayload) -> EchoUnsetPayload {
+    payload
+}
+
+#[get("/json/nested-include")]
+#[response_model(include = {"order_id", "customer": {"email"}, "items": {"__all__": {"sku"}}})]
+async fn json_nested_include() -> serde_json::Value {
+    ultraapi::serde_json::json!({
+        "order_id": 200,
+        "customer": {
+            "id": 1,
+            "email": "nested@example.com",
+            "password_hash": "secret"
+        },
+        "items": [
+            {"sku": "A-1", "qty": 2, "internal_code": "x"},
+            {"sku": "B-2", "qty": 1, "internal_code": "y"}
+        ],
+        "internal_note": "private"
+    })
+}
+
+#[get("/json/nested-include-full-subtree")]
+#[response_model(include = {"order_id", "customer", "items": {"__all__": true}})]
+async fn json_nested_include_full_subtree() -> serde_json::Value {
+    ultraapi::serde_json::json!({
+        "order_id": 202,
+        "customer": {
+            "id": 3,
+            "email": "full@example.com",
+            "password_hash": "visible"
+        },
+        "items": [
+            {"sku": "Z-1", "qty": 8, "internal_code": "m"},
+            {"sku": "Z-2", "qty": 9, "internal_code": "n"}
+        ],
+        "internal_note": "private"
+    })
+}
+
+#[get("/json/nested-exclude")]
+#[response_model(exclude = {"customer": {"password_hash"}, "items": {"__all__": {"internal_code"}}, "internal_note"})]
+async fn json_nested_exclude() -> serde_json::Value {
+    ultraapi::serde_json::json!({
+        "order_id": 201,
+        "customer": {
+            "id": 2,
+            "email": "exclude@example.com",
+            "password_hash": "secret"
+        },
+        "items": [
+            {"sku": "X-1", "qty": 3, "internal_code": "a"},
+            {"sku": "Y-2", "qty": 4, "internal_code": "b"}
+        ],
+        "internal_note": "private"
+    })
+}
+
 // --- Runtime Tests ---
 
 #[tokio::test]
@@ -629,22 +859,19 @@ async fn test_redirect_302() {
 // --- OpenAPI Tests for Redirect ---
 
 #[tokio::test]
-async fn test_openapi_redirect_content_type() {
+async fn test_openapi_redirect_response_headers() {
     let base = spawn_app().await;
     let resp = reqwest::get(format!("{base}/openapi.json")).await.unwrap();
     assert_eq!(resp.status(), 200);
     let spec: serde_json::Value = resp.json().await.unwrap();
 
-    // Print all paths to debug
-    let paths = spec["paths"].as_object().unwrap();
-    eprintln!("All paths: {:?}", paths.keys().collect::<Vec<_>>());
-
     // Check /redirect endpoint
     let get_op = &spec["paths"]["/redirect"]["get"];
-    let response = &get_op["responses"]["200"]["content"];
+    let response = &get_op["responses"]["307"];
 
-    // Redirect should have JSON content type (per our implementation)
-    assert!(response.get("application/json").is_some());
+    // Redirect is represented as header-centric (Location) without response body content.
+    assert!(response.get("content").is_none());
+    assert_eq!(response["headers"]["Location"]["schema"]["type"], "string");
 }
 
 // --- OpenAPI Tests for content_type override ---
@@ -663,6 +890,277 @@ async fn test_openapi_content_type_override() {
     // Should have text/plain (overridden) instead of application/json
     assert!(response.get("text/plain").is_some());
     assert!(response.get("application/json").is_none());
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_none_runtime() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/exclude-none"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 101);
+    assert_eq!(body["name"], "Exclude None");
+    assert!(body.get("nickname").is_none());
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_unset_runtime_keeps_explicit_null_and_empty_values() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/exclude-unset"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 102);
+    assert_eq!(body["name"], "Exclude Unset");
+    assert_eq!(body.get("nickname"), Some(&serde_json::Value::Null));
+    assert_eq!(body.get("tags"), Some(&serde_json::json!([])));
+    assert_eq!(body.get("meta"), Some(&serde_json::json!({})));
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_defaults_runtime_without_metadata_keeps_values() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/exclude-defaults"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 0);
+    assert_eq!(body["name"], "");
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["score"], 0);
+    assert_eq!(body["payload"], "ok");
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_unset_runtime_keeps_explicit_api_model_values() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/exclude-unset/model"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 103);
+    assert_eq!(body.get("nickname"), Some(&serde_json::Value::Null));
+    assert_eq!(body["score"], 0);
+    assert_eq!(body["enabled"], false);
+    assert_eq!(body["label"], "");
+
+    let profile = body
+        .get("profile")
+        .and_then(serde_json::Value::as_object)
+        .expect("profile must be present as object");
+    assert_eq!(profile.get("visits"), Some(&serde_json::json!(0)));
+    assert_eq!(profile.get("note"), Some(&serde_json::json!("")));
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_unset_runtime_prunes_omitted_api_model_fields() {
+    let base = spawn_app().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/json/exclude-unset/echo"))
+        .json(&serde_json::json!({
+            "id": 500,
+            "profile": {}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 500);
+    assert!(body.get("nickname").is_none());
+    assert!(body.get("tags").is_none());
+    assert_eq!(body.get("profile"), Some(&serde_json::json!({})));
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_unset_runtime_keeps_explicit_empty_values_from_request() {
+    let base = spawn_app().await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{base}/json/exclude-unset/echo"))
+        .json(&serde_json::json!({
+            "id": 501,
+            "nickname": null,
+            "tags": [],
+            "profile": {
+                "note": null,
+                "labels": []
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 501);
+    assert_eq!(body.get("nickname"), Some(&serde_json::Value::Null));
+    assert_eq!(body.get("tags"), Some(&serde_json::json!([])));
+    assert_eq!(
+        body.get("profile"),
+        Some(&serde_json::json!({"note": null, "labels": []}))
+    );
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_defaults_runtime_filters_api_model_payload() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/exclude-defaults/model"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], 104);
+    // Option<T> fields default to None, so null is removed.
+    assert!(body.get("nickname").is_none());
+    // Non-defaulted fields should be retained even when value looks falsy.
+    assert_eq!(body.get("score"), Some(&serde_json::json!(0)));
+    assert_eq!(body.get("enabled"), Some(&serde_json::json!(false)));
+    assert_eq!(body.get("label"), Some(&serde_json::json!("")));
+    assert_eq!(
+        body.get("profile"),
+        Some(&serde_json::json!({"visits": 0, "note": ""}))
+    );
+}
+
+#[tokio::test]
+async fn test_response_model_exclude_defaults_runtime_filters_declared_non_falsy_defaults() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/exclude-defaults/model/custom"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body.get("mode").is_none());
+    assert!(body.get("max_retries").is_none());
+    // No declared default metadata => keep falsy value.
+    assert_eq!(body.get("active"), Some(&serde_json::json!(false)));
+}
+
+#[tokio::test]
+async fn test_response_model_nested_include_runtime() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/nested-include"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["order_id"], 200);
+    assert!(body.get("internal_note").is_none());
+
+    let customer = body
+        .get("customer")
+        .and_then(serde_json::Value::as_object)
+        .expect("customer should be object");
+    assert_eq!(customer.len(), 1);
+    assert_eq!(
+        customer.get("email"),
+        Some(&serde_json::json!("nested@example.com"))
+    );
+
+    let items = body
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items should be array");
+    assert_eq!(items.len(), 2);
+    for item in items {
+        let item = item.as_object().expect("item should be object");
+        assert_eq!(item.len(), 1);
+        assert!(item.get("sku").is_some());
+        assert!(item.get("qty").is_none());
+        assert!(item.get("internal_code").is_none());
+    }
+}
+
+#[tokio::test]
+async fn test_response_model_nested_include_runtime_with_full_subtree_selectors() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/nested-include-full-subtree"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["order_id"], 202);
+    assert!(body.get("internal_note").is_none());
+
+    let customer = body
+        .get("customer")
+        .and_then(serde_json::Value::as_object)
+        .expect("customer should be object");
+    assert_eq!(customer.get("id"), Some(&serde_json::json!(3)));
+    assert_eq!(
+        customer.get("email"),
+        Some(&serde_json::json!("full@example.com"))
+    );
+    assert_eq!(
+        customer.get("password_hash"),
+        Some(&serde_json::json!("visible"))
+    );
+
+    let items = body
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items should be array");
+    assert_eq!(items.len(), 2);
+    assert_eq!(
+        items[0],
+        serde_json::json!({"sku": "Z-1", "qty": 8, "internal_code": "m"})
+    );
+    assert_eq!(
+        items[1],
+        serde_json::json!({"sku": "Z-2", "qty": 9, "internal_code": "n"})
+    );
+}
+
+#[tokio::test]
+async fn test_response_model_nested_exclude_runtime() {
+    let base = spawn_app().await;
+    let resp = reqwest::get(format!("{base}/json/nested-exclude"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["order_id"], 201);
+    assert!(body.get("internal_note").is_none());
+
+    let customer = body
+        .get("customer")
+        .and_then(serde_json::Value::as_object)
+        .expect("customer should be object");
+    assert_eq!(customer.get("id"), Some(&serde_json::json!(2)));
+    assert_eq!(
+        customer.get("email"),
+        Some(&serde_json::json!("exclude@example.com"))
+    );
+    assert!(customer.get("password_hash").is_none());
+
+    let items = body
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .expect("items should be array");
+    assert_eq!(items.len(), 2);
+    for item in items {
+        let item = item.as_object().expect("item should be object");
+        assert!(item.get("sku").is_some());
+        assert!(item.get("qty").is_some());
+        assert!(item.get("internal_code").is_none());
+    }
 }
 
 // --- ResponseClass::Redirect tests ---

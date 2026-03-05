@@ -8,7 +8,7 @@
 
 use std::any::TypeId;
 use std::sync::Arc;
-use ultraapi::{AppState, DependencyError, DependsResolver, UltraApiApp};
+use ultraapi::{AppState, DependencyError, Depends, DependsResolver, UltraApiApp};
 
 /// Test: callable dependency receiving another dependency
 #[tokio::test]
@@ -173,4 +173,181 @@ async fn test_depends_with_deps_api() {
     let deps = resolver.get_deps::<ServiceB>();
     assert!(deps.is_some());
     assert_eq!(deps.unwrap(), vec![TypeId::of::<ServiceA>()]);
+}
+
+#[tokio::test]
+async fn test_depends_with_deps_resolves_nested_chain_automatically() {
+    #[derive(Clone)]
+    struct DbPool {
+        dsn: String,
+    }
+
+    #[derive(Clone)]
+    struct UserRepo {
+        pool: Arc<DbPool>,
+    }
+
+    #[derive(Clone)]
+    struct UserService {
+        repo: Arc<UserRepo>,
+    }
+
+    async fn get_db_pool(_state: AppState) -> Result<DbPool, DependencyError> {
+        Ok(DbPool {
+            dsn: "postgres://localhost/ultraapi".to_string(),
+        })
+    }
+
+    async fn get_user_repo(state: AppState) -> Result<UserRepo, DependencyError> {
+        let pool = state
+            .get::<DbPool>()
+            .ok_or_else(|| DependencyError::missing("DbPool"))?;
+        Ok(UserRepo { pool })
+    }
+
+    async fn get_user_service(state: AppState) -> Result<UserService, DependencyError> {
+        let repo = state
+            .get::<UserRepo>()
+            .ok_or_else(|| DependencyError::missing("UserRepo"))?;
+        Ok(UserService { repo })
+    }
+
+    let resolver = DependsResolver::new();
+    resolver.register(std::marker::PhantomData::<DbPool>, get_db_pool);
+    resolver.register_with_deps(
+        std::marker::PhantomData::<UserRepo>,
+        get_user_repo,
+        vec![TypeId::of::<DbPool>()],
+    );
+    resolver.register_with_deps(
+        std::marker::PhantomData::<UserService>,
+        get_user_service,
+        vec![TypeId::of::<UserRepo>()],
+    );
+
+    let service = resolver
+        .resolve::<UserService>(&AppState::new())
+        .await
+        .expect("UserService should resolve with nested chain");
+
+    assert_eq!(service.repo.pool.dsn, "postgres://localhost/ultraapi");
+}
+
+#[tokio::test]
+async fn test_depends_with_deps_missing_dependency_returns_clear_error() {
+    #[derive(Clone)]
+    struct MissingDep;
+
+    #[derive(Clone, Debug)]
+    struct ServiceWithMissingDep;
+
+    async fn get_service_with_missing_dep(
+        state: AppState,
+    ) -> Result<ServiceWithMissingDep, DependencyError> {
+        let _ = state
+            .get::<MissingDep>()
+            .ok_or_else(|| DependencyError::missing("MissingDep"))?;
+        Ok(ServiceWithMissingDep)
+    }
+
+    let resolver = DependsResolver::new();
+    resolver.register_with_deps(
+        std::marker::PhantomData::<ServiceWithMissingDep>,
+        get_service_with_missing_dep,
+        vec![TypeId::of::<MissingDep>()],
+    );
+
+    let err = resolver
+        .resolve::<ServiceWithMissingDep>(&AppState::new())
+        .await
+        .expect_err("missing declared dependency should error");
+
+    let message = err.to_string();
+    assert!(message.contains("Dependency not found in chain"));
+    assert!(message.contains("ServiceWithMissingDep"));
+}
+
+#[tokio::test]
+async fn test_depends_with_deps_cycle_returns_clear_error() {
+    #[derive(Clone, Debug)]
+    struct ServiceA;
+
+    #[derive(Clone)]
+    struct ServiceB;
+
+    async fn get_service_a(state: AppState) -> Result<ServiceA, DependencyError> {
+        let _ = state
+            .get::<ServiceB>()
+            .ok_or_else(|| DependencyError::missing("ServiceB"))?;
+        Ok(ServiceA)
+    }
+
+    async fn get_service_b(state: AppState) -> Result<ServiceB, DependencyError> {
+        let _ = state
+            .get::<ServiceA>()
+            .ok_or_else(|| DependencyError::missing("ServiceA"))?;
+        Ok(ServiceB)
+    }
+
+    let resolver = DependsResolver::new();
+    resolver.register_with_deps(
+        std::marker::PhantomData::<ServiceA>,
+        get_service_a,
+        vec![TypeId::of::<ServiceB>()],
+    );
+    resolver.register_with_deps(
+        std::marker::PhantomData::<ServiceB>,
+        get_service_b,
+        vec![TypeId::of::<ServiceA>()],
+    );
+
+    let err = resolver
+        .resolve::<ServiceA>(&AppState::new())
+        .await
+        .expect_err("cycle should be detected");
+
+    let message = err.to_string();
+    assert!(message.contains("Circular dependency detected"));
+    assert!(message.contains("ServiceA"));
+    assert!(message.contains("ServiceB"));
+}
+
+#[tokio::test]
+async fn test_depends_accepts_fastapi_style_callable_signature() {
+    #[derive(Clone)]
+    struct DbPool {
+        dsn: String,
+    }
+
+    #[derive(Clone)]
+    struct UserRepo {
+        pool: Arc<DbPool>,
+    }
+
+    async fn get_db_pool() -> Result<DbPool, DependencyError> {
+        Ok(DbPool {
+            dsn: "postgres://localhost/ultraapi".to_string(),
+        })
+    }
+
+    async fn get_user_repo(pool: Depends<DbPool>) -> Result<UserRepo, DependencyError> {
+        Ok(UserRepo {
+            pool: Arc::clone(&pool.0),
+        })
+    }
+
+    let app = UltraApiApp::new()
+        .depends(get_db_pool)
+        .depends(get_user_repo);
+
+    let resolver = app
+        .get_depends_resolver()
+        .expect("resolver should exist for callable dependencies");
+
+    let repo = resolver
+        .resolve::<UserRepo>(&AppState::new())
+        .await
+        .expect("callable dependency with Depends/State should resolve");
+
+    assert_eq!(repo.pool.dsn, "postgres://localhost/ultraapi");
 }

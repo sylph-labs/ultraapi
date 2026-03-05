@@ -1,8 +1,9 @@
 use proc_macro::TokenStream;
+use proc_macro2::{Delimiter, TokenStream as TokenStream2, TokenTree};
 use quote::{format_ident, quote};
 use syn::{
-    parse::Parser, parse_macro_input, FnArg, ItemEnum, ItemFn, ItemStruct, LitInt, LitStr, PatType,
-    Path, PathSegment, Type,
+    parse::Parser, parse_macro_input, punctuated::Punctuated, FnArg, ItemEnum, ItemFn, ItemStruct,
+    LitInt, LitStr, PatType, Path, PathSegment, Type,
 };
 
 fn extract_inner_type(seg: &PathSegment) -> Option<&Type> {
@@ -50,10 +51,50 @@ fn is_query_type(ty: &Type) -> bool {
     false
 }
 
-fn is_header_type(ty: &Type) -> bool {
+fn option_inner_type(ty: &Type) -> Option<&Type> {
     if let Type::Path(tp) = ty {
         if let Some(seg) = tp.path.segments.last() {
-            return seg.ident == "TypedHeader";
+            if seg.ident == "Option" {
+                return extract_inner_type(seg);
+            }
+        }
+    }
+    None
+}
+
+fn typed_header_inner_type(ty: &Type) -> Option<&Type> {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            if seg.ident == "TypedHeader" {
+                return extract_inner_type(seg);
+            }
+            if seg.ident == "Option" {
+                if let Some(inner) = extract_inner_type(seg) {
+                    return typed_header_inner_type(inner);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn is_header_type(ty: &Type) -> bool {
+    typed_header_inner_type(ty).is_some()
+}
+
+fn is_header_map_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "HeaderMap";
+        }
+    }
+    false
+}
+
+fn is_request_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "Request";
         }
     }
     false
@@ -90,6 +131,15 @@ fn is_session_type(ty: &Type) -> bool {
     if let Type::Path(tp) = ty {
         if let Some(seg) = tp.path.segments.last() {
             return seg.ident == "Session";
+        }
+    }
+    false
+}
+
+fn is_background_tasks_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            return seg.ident == "BackgroundTasks";
         }
     }
     false
@@ -144,6 +194,24 @@ fn get_type_name(ty: &Type) -> String {
     "Unknown".to_string()
 }
 
+fn pat_ident_name(pat: &syn::Pat) -> Option<String> {
+    if let syn::Pat::Ident(pi) = pat {
+        let ident = pi.ident.to_string();
+        if ident == "_" {
+            return None;
+        }
+
+        let trimmed = ident.trim_start_matches('_');
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        None
+    }
+}
+
 /// Check if the type is Result<T, E> and return the Ok type
 fn get_result_ok_type(ty: &Type) -> Option<&Type> {
     if let Type::Path(tp) = ty {
@@ -174,6 +242,34 @@ fn get_vec_inner_type_name(ty: &Type) -> Option<String> {
     None
 }
 
+fn resolve_dependency_type(ty: &Type) -> Type {
+    if let Type::Path(tp) = ty {
+        if let Some(seg) = tp.path.segments.last() {
+            if seg.ident == "Depends" || seg.ident == "Dep" || seg.ident == "State" {
+                if let Some(inner) = extract_inner_type(seg) {
+                    return inner.clone();
+                }
+            }
+        }
+    }
+
+    ty.clone()
+}
+
+fn parse_dependencies_attr(tokens: TokenStream2) -> syn::Result<Vec<Type>> {
+    let parser = Punctuated::<Type, syn::Token![,]>::parse_terminated;
+    let parsed = parser.parse2(tokens)?;
+
+    if parsed.is_empty() {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "dependencies(...) requires at least one dependency type",
+        ));
+    }
+
+    Ok(parsed.into_iter().collect())
+}
+
 fn is_primitive_type(ty: &Type) -> bool {
     let name = get_type_name(ty);
     matches!(
@@ -192,6 +288,18 @@ fn is_primitive_type(ty: &Type) -> bool {
             | "String"
             | "bool"
     )
+}
+
+fn is_scalar_query_type(ty: &Type) -> bool {
+    if is_primitive_type(ty) {
+        return true;
+    }
+
+    if let Some(inner) = option_inner_type(ty) {
+        return is_primitive_type(inner);
+    }
+
+    false
 }
 
 /// Extract doc comment string from attributes
@@ -213,6 +321,231 @@ fn extract_doc_comment(attrs: &[syn::Attribute]) -> String {
     lines.join("\n").trim().to_string()
 }
 
+#[derive(Default)]
+struct ParsedResponseModelArgs {
+    include: Option<Vec<String>>,
+    exclude: Option<Vec<String>>,
+    by_alias: Option<bool>,
+    exclude_none: Option<bool>,
+    exclude_unset: Option<bool>,
+    exclude_defaults: Option<bool>,
+    content_type: Option<String>,
+}
+
+fn parse_bool_token(token: &TokenTree) -> Option<bool> {
+    match token {
+        TokenTree::Ident(ident) if ident == "true" => Some(true),
+        TokenTree::Ident(ident) if ident == "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_string_token(token: &TokenTree) -> Option<String> {
+    if let TokenTree::Literal(lit) = token {
+        syn::parse_str::<LitStr>(&lit.to_string())
+            .ok()
+            .map(|s| s.value())
+    } else {
+        None
+    }
+}
+
+fn parse_selector_key_token(token: &TokenTree) -> Option<String> {
+    if let Some(value) = parse_string_token(token) {
+        return Some(value);
+    }
+
+    match token {
+        TokenTree::Ident(ident) => Some(ident.to_string()),
+        TokenTree::Literal(lit) => Some(lit.to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_selector_segment(segment: &str) -> String {
+    match segment {
+        "__all__" | "*" => "*".to_string(),
+        _ => segment.to_string(),
+    }
+}
+
+fn join_selector_path(prefix: &str, segment: &str) -> String {
+    let segment = normalize_selector_segment(segment);
+    if prefix.is_empty() {
+        segment
+    } else {
+        format!("{}.{}", prefix, segment)
+    }
+}
+
+fn parse_selector_group(group: &proc_macro2::Group, prefix: &str) -> syn::Result<Vec<String>> {
+    if group.delimiter() != Delimiter::Brace {
+        return Err(syn::Error::new(
+            group.span(),
+            "include/exclude value must use {...} set/dict syntax",
+        ));
+    }
+
+    let mut paths = Vec::new();
+    let tokens: Vec<TokenTree> = group.stream().into_iter().collect();
+    let mut idx = 0usize;
+
+    while idx < tokens.len() {
+        if matches!(&tokens[idx], TokenTree::Punct(p) if p.as_char() == ',') {
+            idx += 1;
+            continue;
+        }
+
+        let key = parse_selector_key_token(&tokens[idx]).ok_or_else(|| {
+            syn::Error::new(
+                tokens[idx].span(),
+                "include/exclude key must be a string literal or identifier",
+            )
+        })?;
+        idx += 1;
+
+        let path = join_selector_path(prefix, &key);
+
+        let has_nested =
+            idx < tokens.len() && matches!(&tokens[idx], TokenTree::Punct(p) if p.as_char() == ':');
+
+        if has_nested {
+            idx += 1;
+            if idx >= tokens.len() {
+                return Err(syn::Error::new(
+                    group.span(),
+                    "expected nested selector after ':'",
+                ));
+            }
+
+            match &tokens[idx] {
+                TokenTree::Group(nested) if nested.delimiter() == Delimiter::Brace => {
+                    let nested_paths = parse_selector_group(nested, &path)?;
+                    paths.extend(nested_paths);
+                }
+                token => {
+                    if parse_bool_token(token).unwrap_or(false) {
+                        paths.push(path.clone());
+                    } else {
+                        return Err(syn::Error::new(
+                            token.span(),
+                            "nested selector must be {...} or boolean",
+                        ));
+                    }
+                }
+            }
+            idx += 1;
+        } else {
+            paths.push(path);
+        }
+
+        if idx < tokens.len() {
+            if matches!(&tokens[idx], TokenTree::Punct(p) if p.as_char() == ',') {
+                idx += 1;
+            } else {
+                return Err(syn::Error::new(
+                    tokens[idx].span(),
+                    "expected ',' between include/exclude entries",
+                ));
+            }
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+fn parse_response_model_args(tokens: TokenStream2) -> syn::Result<ParsedResponseModelArgs> {
+    let mut parsed = ParsedResponseModelArgs::default();
+
+    let parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("include") {
+            let value = meta.value()?;
+            let token: TokenTree = value.parse()?;
+            match token {
+                TokenTree::Group(group) => {
+                    parsed.include = Some(parse_selector_group(&group, "")?);
+                }
+                token => {
+                    return Err(syn::Error::new(
+                        token.span(),
+                        "response_model(include=...) must use {...} syntax",
+                    ));
+                }
+            }
+        } else if meta.path.is_ident("exclude") {
+            let value = meta.value()?;
+            let token: TokenTree = value.parse()?;
+            match token {
+                TokenTree::Group(group) => {
+                    parsed.exclude = Some(parse_selector_group(&group, "")?);
+                }
+                token => {
+                    return Err(syn::Error::new(
+                        token.span(),
+                        "response_model(exclude=...) must use {...} syntax",
+                    ));
+                }
+            }
+        } else if meta.path.is_ident("by_alias") {
+            let value = meta.value()?;
+            let token: TokenTree = value.parse()?;
+            parsed.by_alias = Some(parse_bool_token(&token).ok_or_else(|| {
+                syn::Error::new(
+                    token.span(),
+                    "response_model(by_alias=...) expects true/false",
+                )
+            })?);
+        } else if meta.path.is_ident("exclude_none") {
+            let value = meta.value()?;
+            let token: TokenTree = value.parse()?;
+            parsed.exclude_none = Some(parse_bool_token(&token).ok_or_else(|| {
+                syn::Error::new(
+                    token.span(),
+                    "response_model(exclude_none=...) expects true/false",
+                )
+            })?);
+        } else if meta.path.is_ident("exclude_unset") {
+            let value = meta.value()?;
+            let token: TokenTree = value.parse()?;
+            parsed.exclude_unset = Some(parse_bool_token(&token).ok_or_else(|| {
+                syn::Error::new(
+                    token.span(),
+                    "response_model(exclude_unset=...) expects true/false",
+                )
+            })?);
+        } else if meta.path.is_ident("exclude_defaults") {
+            let value = meta.value()?;
+            let token: TokenTree = value.parse()?;
+            parsed.exclude_defaults = Some(parse_bool_token(&token).ok_or_else(|| {
+                syn::Error::new(
+                    token.span(),
+                    "response_model(exclude_defaults=...) expects true/false",
+                )
+            })?);
+        } else if meta.path.is_ident("content_type") {
+            let value = meta.value()?;
+            let token: TokenTree = value.parse()?;
+            parsed.content_type = Some(parse_string_token(&token).ok_or_else(|| {
+                syn::Error::new(
+                    token.span(),
+                    "response_model(content_type=...) expects a string literal",
+                )
+            })?);
+        } else {
+            return Err(meta.error(
+                "unsupported response_model option (expected include/exclude/by_alias/exclude_none/exclude_unset/exclude_defaults/content_type)",
+            ));
+        }
+
+        Ok(())
+    });
+
+    parser.parse2(tokens)?;
+    Ok(parsed)
+}
+
 fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> TokenStream {
     let path = parse_macro_input!(attr as LitStr).value();
     let input_fn = parse_macro_input!(item as ItemFn);
@@ -222,16 +555,22 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let fn_block = &input_fn.block;
 
     // Parse custom attributes: #[status(N)], #[tag("x")], #[security("x")],
-    // #[response_model(include={"a","b"})], #[response_model(exclude={"a","b"})],
-    // #[response_model(by_alias=true)], #[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")], doc comments
+    // #[dependencies(...)], #[response_model(include={"a","b"})],
+    // #[response_model(exclude={"a","b"})], #[response_model(by_alias=true)],
+    // #[response_class("json"|"html"|"text"|"binary"|"stream"|"xml")], doc comments
     let mut status_code: Option<u16> = None;
     let mut tags: Vec<String> = Vec::new();
     let mut security_schemes: Vec<String> = Vec::new();
+    let mut route_dependencies: Vec<Type> = Vec::new();
     // Response model shaping options
     let mut has_response_model: bool = false; // Track if #[response_model(...)] was used
     let mut include_fields: Option<Vec<String>> = None;
     let mut exclude_fields: Option<Vec<String>> = None;
     let mut by_alias: bool = false;
+    // FastAPI parity options for response_model
+    let mut exclude_none: bool = false;
+    let mut exclude_unset: bool = false;
+    let mut exclude_defaults: bool = false;
     // Response model content-type override
     let mut response_model_content_type: Option<String> = None;
     // Response class (default: json)
@@ -266,112 +605,51 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                     security_schemes.push(lit.value());
                 }
             }
+        } else if attr.path().is_ident("dependencies") {
+            if let syn::Meta::List(list) = &attr.meta {
+                let parsed = match parse_dependencies_attr(list.tokens.clone()) {
+                    Ok(parsed) => parsed,
+                    Err(err) => return err.to_compile_error().into(),
+                };
+                route_dependencies.extend(parsed);
+            } else {
+                return syn::Error::new_spanned(
+                    attr,
+                    "dependencies attribute must be used as #[dependencies(...)]",
+                )
+                .to_compile_error()
+                .into();
+            }
         } else if attr.path().is_ident("response_model") {
             // Mark that response_model attribute was used
             has_response_model = true;
-            // Parse response_model(include={"a","b"}, exclude={"c"}, by_alias=true)
-            // Simplified parsing: look for key=value patterns in tokens
+
             if let syn::Meta::List(list) = &attr.meta {
-                let tokens = list.tokens.clone();
-                let tokens_str = tokens.to_string();
+                let parsed = match parse_response_model_args(list.tokens.clone()) {
+                    Ok(parsed) => parsed,
+                    Err(err) => return err.to_compile_error().into(),
+                };
 
-                // Extract include fields
-                if let Some(start) = tokens_str.find("include") {
-                    let after_include = &tokens_str[start..];
-                    if let Some(eq_pos) = after_include.find('=') {
-                        let after_eq = &after_include[eq_pos + 1..];
-                        let end_pos = after_eq
-                            .find(|c: char| {
-                                !c.is_alphanumeric()
-                                    && c != '"'
-                                    && c != '{'
-                                    && c != '}'
-                                    && c != ','
-                                    && c != ' '
-                            })
-                            .map(|p| p + eq_pos + start + 1)
-                            .unwrap_or(tokens_str.len());
-                        let fields_str =
-                            &tokens_str[eq_pos + 1 + start..end_pos.min(tokens_str.len())];
-                        let fields: Vec<String> = fields_str
-                            .split(',')
-                            .map(|s| {
-                                s.trim()
-                                    .trim_matches('"')
-                                    .trim_matches('{')
-                                    .trim_matches('}')
-                            })
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                            .collect();
-                        if !fields.is_empty() {
-                            include_fields = Some(fields);
-                        }
-                    }
+                if let Some(include) = parsed.include {
+                    include_fields = Some(include);
                 }
-
-                // Extract exclude fields
-                if let Some(start) = tokens_str.find("exclude") {
-                    let after_exclude = &tokens_str[start..];
-                    if let Some(eq_pos) = after_exclude.find('=') {
-                        let after_eq = &after_exclude[eq_pos + 1..];
-                        let end_pos = after_eq
-                            .find(|c: char| {
-                                !c.is_alphanumeric()
-                                    && c != '"'
-                                    && c != '{'
-                                    && c != '}'
-                                    && c != ','
-                                    && c != ' '
-                            })
-                            .map(|p| p + eq_pos + start + 1)
-                            .unwrap_or(tokens_str.len());
-                        let fields_str =
-                            &tokens_str[eq_pos + 1 + start..end_pos.min(tokens_str.len())];
-                        let fields: Vec<String> = fields_str
-                            .split(',')
-                            .map(|s| {
-                                s.trim()
-                                    .trim_matches('"')
-                                    .trim_matches('{')
-                                    .trim_matches('}')
-                            })
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                            .collect();
-                        if !fields.is_empty() {
-                            exclude_fields = Some(fields);
-                        }
-                    }
+                if let Some(exclude) = parsed.exclude {
+                    exclude_fields = Some(exclude);
                 }
-
-                // Extract by_alias
-                if tokens_str.contains("by_alias") {
-                    if tokens_str.contains("by_alias=true")
-                        || tokens_str.contains("by_alias = true")
-                    {
-                        by_alias = true;
-                    } else if tokens_str.contains("by_alias=false")
-                        || tokens_str.contains("by_alias = false")
-                    {
-                        by_alias = false;
-                    }
+                if let Some(flag) = parsed.by_alias {
+                    by_alias = flag;
                 }
-
-                // Extract content_type
-                if let Some(start) = tokens_str.find("content_type") {
-                    let after_ct = &tokens_str[start..];
-                    if let Some(eq_pos) = after_ct.find('=') {
-                        let after_eq = &after_ct[eq_pos + 1..];
-                        // Find the end of the string value (next comma, closing paren, or end)
-                        let end_pos = after_eq
-                            .find(|c: char| [',', ')'].contains(&c))
-                            .unwrap_or(after_eq.len());
-                        let ct_value = after_eq[..end_pos].trim().trim_matches('"').trim();
-                        if !ct_value.is_empty() {
-                            response_model_content_type = Some(ct_value.to_string());
-                        }
-                    }
+                if let Some(flag) = parsed.exclude_none {
+                    exclude_none = flag;
+                }
+                if let Some(flag) = parsed.exclude_unset {
+                    exclude_unset = flag;
+                }
+                if let Some(flag) = parsed.exclude_defaults {
+                    exclude_defaults = flag;
+                }
+                if let Some(content_type) = parsed.content_type {
+                    response_model_content_type = Some(content_type);
                 }
             }
         } else if attr.path().is_ident("response_class") {
@@ -425,16 +703,20 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             // This attribute is handled separately - it generates inventory::submit! for CallbackInfo
             // We don't include it in clean_attrs as it's not a runtime attribute
         } else {
-            // Not doc, not status/tag/security/response_model/response_class/callback - keep it (e.g. serde, schemars)
+            // Not doc, not status/tag/security/dependencies/response_model/response_class/callback - keep it (e.g. serde, schemars)
             clean_attrs.push(attr);
         }
     }
 
     // Default status codes
-    let default_status: u16 = match method {
-        "post" => 201,
-        "delete" => 204,
-        _ => 200,
+    let default_status: u16 = if response_class.as_deref() == Some("redirect") {
+        307
+    } else {
+        match method {
+            "post" => 201,
+            "delete" => 204,
+            _ => 200,
+        }
     };
     let success_status = status_code.unwrap_or(default_status);
 
@@ -516,11 +798,15 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let mut has_body = false;
     let mut has_form_body = false;
     let mut has_multipart_body = false;
+    let mut has_request_extractor = false;
     let mut has_generator_deps = false;
+    let mut has_depends_params = false;
     let mut body_type: Option<&Type> = None;
     let mut path_param_types: Vec<(&syn::Ident, &Type)> = Vec::new();
     let mut query_type: Option<&Type> = None;
     let mut query_extraction = quote! {};
+    let mut scalar_query_params: Vec<(&syn::Ident, &Type)> = Vec::new();
+    let mut openapi_dynamic_params: Vec<proc_macro2::TokenStream> = Vec::new();
 
     for arg in &input_fn.sig.inputs {
         if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
@@ -554,13 +840,16 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 if let Type::Path(tp) = ty.as_ref() {
                     if let Some(seg) = tp.path.segments.last() {
                         if let Some(inner) = extract_inner_type(seg) {
-                            // Track that we have generator dependencies - will create shared scope at handler start
+                            // Track that we have Depends parameters so we can create request-local cache.
+                            has_depends_params = true;
+                            // Keep shared cleanup scope behavior for yield-based deps.
                             has_generator_deps = true;
 
                             dep_extractions.push(quote! {
-                                // Check if it's a registered generator (yield-based dependency)
-                                // Uses shared dep_scope created at handler start for proper cleanup tracking
-                                let #pat: ultraapi::Depends<#inner> = if let Some(resolver) = state.get_depends_resolver() {
+                                // FastAPI use_cache=true behavior: resolve once per request per type.
+                                let #pat: ultraapi::Depends<#inner> = if let Some(cached) = depends_cache.get::<#inner>() {
+                                    ultraapi::Depends(cached)
+                                } else if let Some(resolver) = state.get_depends_resolver() {
                                     if resolver.is_generator::<#inner>() {
                                         match resolver.resolve_generator::<#inner>(&state, &dep_scope).await {
                                             Ok(dep) => {
@@ -570,24 +859,27 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                                                     .map_err(|_| ultraapi::ApiError::internal(
                                                         format!("Type mismatch for generator: {}", std::any::type_name::<#inner>())
                                                     ))?;
+                                                depends_cache.insert(dep_typed.clone());
                                                 ultraapi::Depends(dep_typed)
                                             }
                                             Err(e) => return Err(ultraapi::ApiError::internal(e.to_string())),
                                         }
                                     } else {
-                                        // Not a generator - use regular resolve
-                                        match resolver.resolve::<#inner>(&state).await {
+                                        // Not a generator - use regular resolve with shared request-local cache.
+                                        match resolver.resolve_with_cache::<#inner>(&state, &depends_cache).await {
                                             Ok(dep) => ultraapi::Depends(dep),
                                             Err(e) => return Err(ultraapi::ApiError::internal(e.to_string())),
                                         }
                                     }
                                 } else {
-                                    // Fallback: try direct AppState resolution for simple cases
-                                    state.get::<#inner>()
-                                        .map(ultraapi::Depends)
+                                    // Fallback: try direct AppState resolution for simple cases.
+                                    let dep = state
+                                        .get::<#inner>()
                                         .ok_or_else(|| ultraapi::ApiError::internal(
                                             format!("Dependency not registered: {}", std::any::type_name::<#inner>())
-                                        ))?
+                                        ))?;
+                                    depends_cache.insert(dep.clone());
+                                    ultraapi::Depends(dep)
                                 };
                             });
                             call_args.push(quote!(#pat));
@@ -613,19 +905,57 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                     }
                 }
             } else if is_header_type(ty) {
-                // TypedHeader<T> extractor
-                if let Type::Path(tp) = ty.as_ref() {
-                    if let Some(seg) = tp.path.segments.last() {
-                        if let Some(inner) = extract_inner_type(seg) {
-                            dep_extractions.push(quote! {
-                                let #pat: ultraapi::axum_extra::extract::TypedHeader<#inner> =
-                                    ultraapi::axum_extra::extract::TypedHeader::from_request_parts(&mut parts, &state).await
-                                    .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid header: {}", e)))?;
-                            });
-                            call_args.push(quote!(#pat));
-                        }
+                // TypedHeader<T> and Option<TypedHeader<T>> extractor
+                if let Some(inner) = typed_header_inner_type(ty) {
+                    if option_inner_type(ty).is_some() {
+                        dep_extractions.push(quote! {
+                            let #pat: Option<ultraapi::axum_extra::extract::TypedHeader<#inner>> =
+                                <ultraapi::axum_extra::extract::TypedHeader<#inner> as ultraapi::axum::extract::OptionalFromRequestParts<ultraapi::AppState>>::from_request_parts(&mut parts, &state).await
+                                .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid header: {}", e)))?;
+                        });
+                    } else {
+                        dep_extractions.push(quote! {
+                            let #pat: ultraapi::axum_extra::extract::TypedHeader<#inner> =
+                                ultraapi::axum_extra::extract::TypedHeader::from_request_parts(&mut parts, &state).await
+                                .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid header: {}", e)))?;
+                        });
                     }
+
+                    let header_required = option_inner_type(ty).is_none();
+                    openapi_dynamic_params.push(quote! {
+                        params.push(ultraapi::openapi::DynParameter {
+                            name: <#inner as ultraapi::axum_extra::headers::Header>::name().as_str().to_string(),
+                            location: "header".to_string(),
+                            required: #header_required,
+                            schema_type: "string".to_string(),
+                            description: None,
+                            style: Some("simple".to_string()),
+                            explode: Some(false),
+                            example: None,
+                            examples: None,
+                            minimum: None,
+                            maximum: None,
+                            min_length: None,
+                            max_length: None,
+                            pattern: None,
+                        });
+                    });
+
+                    call_args.push(quote!(#pat));
                 }
+            } else if is_header_map_type(ty) {
+                // HeaderMap extractor (clone request headers)
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::axum::http::HeaderMap = parts.headers.clone();
+                });
+                call_args.push(quote!(#pat));
+            } else if is_request_type(ty) {
+                // Request<Body> extractor - pass through raw request
+                has_request_extractor = true;
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::axum::http::Request<ultraapi::axum::body::Body> = req;
+                });
+                call_args.push(quote!(#pat));
             } else if is_cookie_type(ty) {
                 // Cookie/CookieJar extractor
                 if let Type::Path(tp) = ty.as_ref() {
@@ -636,6 +966,30 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                                 ultraapi::axum_extra::extract::#cookie_type::from_request_parts(&mut parts, &state).await
                                 .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid cookie: {}", e)))?;
                         });
+
+                        let cookie_name =
+                            pat_ident_name(pat).unwrap_or_else(|| "cookie".to_string());
+                        let cookie_type_name = cookie_type.to_string();
+                        let cookie_required = cookie_type_name != "CookieJar";
+                        openapi_dynamic_params.push(quote! {
+                            params.push(ultraapi::openapi::DynParameter {
+                                name: #cookie_name.to_string(),
+                                location: "cookie".to_string(),
+                                required: #cookie_required,
+                                schema_type: "string".to_string(),
+                                description: None,
+                                style: Some("form".to_string()),
+                                explode: Some(true),
+                                example: None,
+                                examples: None,
+                                minimum: None,
+                                maximum: None,
+                                min_length: None,
+                                max_length: None,
+                                pattern: None,
+                            });
+                        });
+
                         call_args.push(quote!(#pat));
                     }
                 }
@@ -709,13 +1063,34 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                         .map_err(|e| ultraapi::ApiError::internal(format!("Session extraction error: {:?}", e)))?;
                 });
                 call_args.push(quote!(#pat));
+            } else if is_background_tasks_type(ty) {
+                // BackgroundTasks extractor (injected by response_task_middleware)
+                dep_extractions.push(quote! {
+                    let #pat: ultraapi::response_tasks::BackgroundTasks =
+                        ultraapi::response_tasks::BackgroundTasks::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| ultraapi::ApiError::internal(format!("BackgroundTasks extraction error: {:?}", e)))?;
+                });
+                call_args.push(quote!(#pat));
             } else if path_params.contains(&param_name) {
                 if let syn::Pat::Ident(pi) = pat.as_ref() {
                     path_param_types.push((&pi.ident, ty));
                     call_args.push(quote!(#pat));
                 }
-            } else if !is_primitive_type(ty)
-                && !is_header_type(ty)
+            } else if is_scalar_query_type(ty) {
+                if let syn::Pat::Ident(pi) = pat.as_ref() {
+                    scalar_query_params.push((&pi.ident, ty));
+                    call_args.push(quote!(#pat));
+                } else {
+                    return syn::Error::new_spanned(
+                        pat,
+                        "Scalar query parameters must use identifier patterns",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            } else if !is_header_type(ty)
+                && !is_header_map_type(ty)
+                && !is_request_type(ty)
                 && !is_cookie_type(ty)
                 && !is_form_type(ty)
                 && !is_multipart_type(ty)
@@ -724,6 +1099,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 && !is_oauth2_auth_code_bearer_type(ty)
                 && !is_optional_oauth2_auth_code_bearer_type(ty)
                 && !is_session_type(ty)
+                && !is_background_tasks_type(ty)
             {
                 has_body = true;
                 body_type = Some(ty);
@@ -732,6 +1108,89 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 call_args.push(quote!(#pat));
             }
         }
+    }
+
+    let mut route_dependency_extractions: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut route_dependency_type_names: Vec<String> = Vec::new();
+
+    for dep_ty in &route_dependencies {
+        let resolved_ty = resolve_dependency_type(dep_ty);
+        route_dependency_type_names.push(get_type_name(&resolved_ty));
+
+        if is_oauth2_password_bearer_type(dep_ty) || is_oauth2_password_bearer_type(&resolved_ty) {
+            route_dependency_extractions.push(quote! {
+                let _ultraapi_route_dependency: ultraapi::middleware::OAuth2PasswordBearer =
+                    ultraapi::middleware::OAuth2PasswordBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+            });
+            if !security_schemes.iter().any(|s| s == "oauth2Password") {
+                security_schemes.push("oauth2Password".to_string());
+            }
+            continue;
+        }
+
+        if is_optional_oauth2_password_bearer_type(dep_ty)
+            || is_optional_oauth2_password_bearer_type(&resolved_ty)
+        {
+            route_dependency_extractions.push(quote! {
+                let _ultraapi_route_dependency: ultraapi::middleware::OptionalOAuth2PasswordBearer =
+                    ultraapi::middleware::OptionalOAuth2PasswordBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+            });
+            if !security_schemes.iter().any(|s| s == "oauth2Password") {
+                security_schemes.push("oauth2Password".to_string());
+            }
+            continue;
+        }
+
+        if is_oauth2_auth_code_bearer_type(dep_ty) || is_oauth2_auth_code_bearer_type(&resolved_ty)
+        {
+            route_dependency_extractions.push(quote! {
+                let _ultraapi_route_dependency: ultraapi::middleware::OAuth2AuthorizationCodeBearer =
+                    ultraapi::middleware::OAuth2AuthorizationCodeBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+            });
+            if !security_schemes.iter().any(|s| s == "oauth2AuthCode") {
+                security_schemes.push("oauth2AuthCode".to_string());
+            }
+            continue;
+        }
+
+        if is_optional_oauth2_auth_code_bearer_type(dep_ty)
+            || is_optional_oauth2_auth_code_bearer_type(&resolved_ty)
+        {
+            route_dependency_extractions.push(quote! {
+                let _ultraapi_route_dependency: ultraapi::middleware::OptionalOAuth2AuthorizationCodeBearer =
+                    ultraapi::middleware::OptionalOAuth2AuthorizationCodeBearer::from_request_parts(&mut parts, &state).await
+                        .map_err(|e| e)?;
+            });
+            if !security_schemes.iter().any(|s| s == "oauth2AuthCode") {
+                security_schemes.push("oauth2AuthCode".to_string());
+            }
+            continue;
+        }
+
+        route_dependency_extractions.push(quote! {
+            let _ultraapi_route_dependency =
+                ultraapi::resolve_route_dependency::<#resolved_ty>(&state, &dep_scope, &depends_cache).await?;
+        });
+    }
+
+    if !route_dependency_extractions.is_empty() {
+        has_depends_params = true;
+        has_generator_deps = true;
+    }
+
+    route_dependency_type_names.sort();
+    route_dependency_type_names.dedup();
+
+    if has_request_extractor && (has_body || has_form_body || has_multipart_body) {
+        return syn::Error::new_spanned(
+            &input_fn.sig,
+            "Request extractor cannot be combined with body/Form/Multipart extractors",
+        )
+        .to_compile_error()
+        .into();
     }
 
     let return_type = match &input_fn.sig.output {
@@ -750,6 +1209,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
     let return_type_name = effective_return_type
         .map(get_type_name)
         .unwrap_or_else(|| "()".to_string());
+    let body_type_name_for_field_set = body_type.map(get_type_name);
+    let should_capture_request_field_set = has_response_model
+        && exclude_unset
+        && has_body
+        && body_type_name_for_field_set
+            .as_deref()
+            .map(|name| name == return_type_name)
+            .unwrap_or(false);
 
     // Detect Vec<T> return type for array schema (check effective type, i.e. inside Result if applicable)
     let is_vec_response = effective_return_type
@@ -781,6 +1248,41 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         quote! {}
     };
 
+    let scalar_query_struct_name = format_ident!("__ultraapi_scalar_query_{}", fn_name);
+    let scalar_query_struct_def = if scalar_query_params.is_empty() {
+        quote! {}
+    } else {
+        let scalar_query_fields: Vec<_> = scalar_query_params
+            .iter()
+            .map(|(ident, ty)| quote! { #ident: #ty })
+            .collect();
+
+        quote! {
+            #[doc(hidden)]
+            #[allow(non_camel_case_types)]
+            #[derive(ultraapi::serde::Deserialize, ultraapi::schemars::JsonSchema)]
+            struct #scalar_query_struct_name {
+                #(#scalar_query_fields,)*
+            }
+        }
+    };
+
+    let scalar_query_extraction = if scalar_query_params.is_empty() {
+        quote! {}
+    } else {
+        let scalar_query_bindings: Vec<_> = scalar_query_params
+            .iter()
+            .map(|(ident, _)| quote! { let #ident = __ultraapi_scalar_query.#ident; })
+            .collect();
+
+        quote! {
+            let ultraapi::axum::extract::Query(__ultraapi_scalar_query): ultraapi::axum::extract::Query<#scalar_query_struct_name> =
+                ultraapi::axum::extract::Query::from_request_parts(&mut parts, &state).await
+                .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid query parameters: {}", e)))?;
+            #(#scalar_query_bindings)*
+        }
+    };
+
     let body_extraction = if has_form_body || has_multipart_body {
         // Form and Multipart bodies are handled in the dep_extractions loop
         quote! {}
@@ -793,9 +1295,11 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             .find_map(|arg| {
                 if let FnArg::Typed(PatType { pat, ty, .. }) = arg {
                     if !is_dep_type(ty)
-                        && !is_primitive_type(ty)
+                        && !is_scalar_query_type(ty)
                         && !is_query_type(ty)
                         && !is_header_type(ty)
+                        && !is_header_map_type(ty)
+                        && !is_request_type(ty)
                         && !is_cookie_type(ty)
                         && !is_form_type(ty)
                         && !is_multipart_type(ty)
@@ -814,14 +1318,36 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                 None
             })
             .unwrap();
-        quote! {
-            let ultraapi::axum::Json(#bpat): ultraapi::axum::Json<#bty> =
-                ultraapi::axum::Json::from_request(req, &state).await
-                .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid body: {}", e)))?;
-            #bpat.validate().map_err(|e| ultraapi::ApiError::validation_error(e))?;
+        if should_capture_request_field_set {
+            quote! {
+                let ultraapi::axum::Json(__ultraapi_raw_body): ultraapi::axum::Json<ultraapi::serde_json::Value> =
+                    ultraapi::axum::Json::from_request(req, &state).await
+                    .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid body: {}", e)))?;
+                __ultraapi_response_field_set = Some(ultraapi::collect_present_field_paths(&__ultraapi_raw_body));
+                let #bpat: #bty = ultraapi::serde_json::from_value(__ultraapi_raw_body)
+                    .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid body: {}", e)))?;
+                #bpat.validate().map_err(|e| ultraapi::ApiError::validation_error(e))?;
+            }
+        } else {
+            quote! {
+                let ultraapi::axum::Json(#bpat): ultraapi::axum::Json<#bty> =
+                    ultraapi::axum::Json::from_request(req, &state).await
+                    .map_err(|e| ultraapi::ApiError::bad_request(format!("Invalid body: {}", e)))?;
+                #bpat.validate().map_err(|e| ultraapi::ApiError::validation_error(e))?;
+            }
         }
+    } else if has_request_extractor {
+        quote! {}
     } else {
         quote! { let _ = req; }
+    };
+
+    let response_field_set_init = if should_capture_request_field_set {
+        quote! {
+            let mut __ultraapi_response_field_set: Option<std::collections::HashSet<String>> = None;
+        }
+    } else {
+        quote! {}
     };
 
     // Generate response based on status code
@@ -852,15 +1378,28 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
 
         // Get the return type name for alias lookup
         let type_name_expr = quote! { Some(#return_type_name) };
+        let field_set_expr = if should_capture_request_field_set {
+            quote! { __ultraapi_response_field_set.as_ref() }
+        } else {
+            quote! { None }
+        };
 
         quote! {
             let shaping_options = ultraapi::ResponseModelOptions {
                 include: #include_expr,
                 exclude: #exclude_expr,
                 by_alias: #by_alias_expr,
+                exclude_none: #exclude_none,
+                exclude_unset: #exclude_unset,
+                exclude_defaults: #exclude_defaults,
                 content_type: None, // content_type only affects OpenAPI, not runtime
             };
-            let value = shaping_options.apply_with_aliases(value, #type_name_expr, #by_alias);
+            let value = shaping_options.apply_with_aliases_and_field_set(
+                value,
+                #type_name_expr,
+                #by_alias,
+                #field_set_expr,
+            );
         }
     } else {
         quote! { /* No response model shaping */ }
@@ -1079,6 +1618,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
                     required: true,
                     schema: ultraapi::openapi::SchemaObject::new_type(#openapi_type),
                     description: None,
+                    style: Some("simple"),
+                    explode: Some(false),
+                    example: None,
+                    examples: None,
                 }
             }
         })
@@ -1129,6 +1672,9 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             include: #include_expr,
             exclude: #exclude_expr,
             by_alias: #by_alias_expr,
+            exclude_none: #exclude_none,
+            exclude_unset: #exclude_unset,
+            exclude_defaults: #exclude_defaults,
             content_type: #response_model_content_type_expr,
         }
     };
@@ -1149,10 +1695,37 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         },
     };
 
-    let query_params_fn_expr = if let Some(qt) = query_type {
+    let has_query_params = query_type.is_some() || !scalar_query_params.is_empty();
+
+    let query_param_generation_expr = if let Some(qt) = query_type {
+        if scalar_query_params.is_empty() {
+            quote! {
+                let root = ultraapi::schemars::schema_for!(#qt);
+                params.extend(ultraapi::openapi::query_params_from_schema(&root));
+            }
+        } else {
+            quote! {
+                let root = ultraapi::schemars::schema_for!(#qt);
+                params.extend(ultraapi::openapi::query_params_from_schema(&root));
+                let scalar_root = ultraapi::schemars::schema_for!(#scalar_query_struct_name);
+                params.extend(ultraapi::openapi::query_params_from_schema(&scalar_root));
+            }
+        }
+    } else if scalar_query_params.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            let root = ultraapi::schemars::schema_for!(#scalar_query_struct_name);
+            params.extend(ultraapi::openapi::query_params_from_schema(&root));
+        }
+    };
+
+    let query_params_fn_expr = if has_query_params || !openapi_dynamic_params.is_empty() {
         quote! { Some(|| {
-            let root = ultraapi::schemars::schema_for!(#qt);
-            ultraapi::openapi::query_params_from_schema(&root)
+            let mut params = Vec::new();
+            #query_param_generation_expr
+            #(#openapi_dynamic_params)*
+            params
         }) }
     } else {
         quote! { None }
@@ -1172,9 +1745,14 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         None => quote! { None },
     };
 
-    // Generate scope creation (same for both cases - compatibility)
-    let scope_creation = quote! {
-        let dep_scope = std::sync::Arc::new(ultraapi::DependencyScope::new());
+    // Generate per-request scope/cache setup for Depends resolution.
+    let scope_creation = if has_depends_params {
+        quote! {
+            let dep_scope = std::sync::Arc::new(ultraapi::DependencyScope::new());
+            let depends_cache = ultraapi::RequestDependsCache::new();
+        }
+    } else {
+        quote! {}
     };
 
     // Generate cleanup wrapping around response
@@ -1186,7 +1764,7 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             let dep_scope_for_request = dep_scope.clone();
 
             // Run function-scope cleanup - capture result to return after cleanup
-            let result: Result<ultraapi::axum::response::Response, ultraapi::ApiError> = #response_expr;
+            let result: Result<ultraapi::axum::response::Response, ultraapi::ApiError> = { #response_expr };
 
             // Run function cleanup BEFORE returning (both success and error cases)
             dep_scope.run_function_cleanup().await;
@@ -1211,6 +1789,8 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
         #(#clean_attrs)*
         #fn_vis #fn_sig #fn_block
 
+        #scalar_query_struct_def
+
         #[doc(hidden)]
         async fn #wrapper_name(
             ultraapi::axum::extract::State(state): ultraapi::axum::extract::State<ultraapi::AppState>,
@@ -1226,7 +1806,10 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
 
             #path_extraction
             #query_extraction
+            #scalar_query_extraction
+            #(#route_dependency_extractions)*
             #(#dep_extractions)*
+            #response_field_set_init
             #body_extraction
 
             #cleanup_wrapper
@@ -1253,7 +1836,9 @@ fn route_macro_impl(method: &str, attr: TokenStream, item: TokenStream) -> Token
             description: #description,
             tags: &[#(#tags),*],
             security: &[#(#security_schemes),*],
+            dependencies: &[#(#route_dependency_type_names),*],
             query_params_fn: #query_params_fn_expr,
+            has_query_params: #has_query_params,
             response_model_options: #response_model_options_expr,
             response_class: #response_class_expr,
             summary: #summary_expr,
@@ -1343,6 +1928,10 @@ pub fn sse(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// WebSocket endpoint macro - creates WebSocket upgrade handlers
+///
+/// Note: WebSocket upgrade routes are intentionally excluded from OpenAPI paths
+/// (aligned with FastAPI behavior), because OpenAPI does not model WS upgrades
+/// as regular HTTP operations.
 ///
 /// # Example
 /// ```text
@@ -1443,17 +2032,21 @@ fn ws_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     if let Some(seg) = tp.path.segments.last() {
                         if let Some(inner) = extract_inner_type(seg) {
                             dep_extractions.push(quote! {
-                                let #pat: ultraapi::Depends<#inner> = if let Some(resolver) = state.get_depends_resolver() {
-                                    match resolver.resolve::<#inner>(&state).await {
+                                let #pat: ultraapi::Depends<#inner> = if let Some(cached) = depends_cache.get::<#inner>() {
+                                    ultraapi::Depends(cached)
+                                } else if let Some(resolver) = state.get_depends_resolver() {
+                                    match resolver.resolve_with_cache::<#inner>(&state, &depends_cache).await {
                                         Ok(dep) => ultraapi::Depends(dep),
                                         Err(e) => return Err(ultraapi::ApiError::internal(e.to_string()).into_response()),
                                     }
                                 } else {
-                                    state.get::<#inner>()
-                                        .map(ultraapi::Depends)
+                                    let dep = state
+                                        .get::<#inner>()
                                         .ok_or_else(|| ultraapi::ApiError::internal(
                                             format!("Dependency not registered: {}", std::any::type_name::<#inner>())
-                                        ).into_response())?
+                                        ).into_response())?;
+                                    depends_cache.insert(dep.clone());
+                                    ultraapi::Depends(dep)
                                 };
                             });
                             call_args.push(quote!(#pat));
@@ -1480,6 +2073,7 @@ fn ws_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
         ) -> ultraapi::axum::response::Response {
             use ultraapi::axum::response::IntoResponse;
 
+            let depends_cache = ultraapi::RequestDependsCache::new();
             #(#dep_extractions)*
 
             // Call the user's handler, passing the WebSocketUpgrade and any extracted deps
@@ -1507,11 +2101,16 @@ fn ws_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             description: #description,
             tags: &[#(#tags),*],
             security: &[#(#security_schemes),*],
+            dependencies: &[],
             query_params_fn: None,
+            has_query_params: false,
             response_model_options: ultraapi::ResponseModelOptions {
                 include: None,
                 exclude: None,
                 by_alias: false,
+                exclude_none: false,
+                exclude_unset: false,
+                exclude_defaults: false,
                 content_type: None,
             },
             response_class: ultraapi::ResponseClass::Binary, // WebSocket upgrades don't really have a content-type
@@ -1629,17 +2228,21 @@ fn sse_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     if let Some(seg) = tp.path.segments.last() {
                         if let Some(inner) = extract_inner_type(seg) {
                             dep_extractions.push(quote! {
-                                let #pat: ultraapi::Depends<#inner> = if let Some(resolver) = state.get_depends_resolver() {
-                                    match resolver.resolve::<#inner>(&state).await {
+                                let #pat: ultraapi::Depends<#inner> = if let Some(cached) = depends_cache.get::<#inner>() {
+                                    ultraapi::Depends(cached)
+                                } else if let Some(resolver) = state.get_depends_resolver() {
+                                    match resolver.resolve_with_cache::<#inner>(&state, &depends_cache).await {
                                         Ok(dep) => ultraapi::Depends(dep),
                                         Err(e) => return Err(ultraapi::ApiError::internal(e.to_string())),
                                     }
                                 } else {
-                                    state.get::<#inner>()
-                                        .map(ultraapi::Depends)
+                                    let dep = state
+                                        .get::<#inner>()
                                         .ok_or_else(|| ultraapi::ApiError::internal(
                                             format!("Dependency not registered: {}", std::any::type_name::<#inner>())
-                                        ))?
+                                        ))?;
+                                    depends_cache.insert(dep.clone());
+                                    ultraapi::Depends(dep)
                                 };
                             });
                             call_args.push(quote!(#pat));
@@ -1705,6 +2308,10 @@ fn sse_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
                     required: true,
                     schema: ultraapi::openapi::SchemaObject::new_type(#openapi_type),
                     description: None,
+                    style: Some("simple"),
+                    explode: Some(false),
+                    example: None,
+                    examples: None,
                 }
             }
         })
@@ -1729,6 +2336,7 @@ fn sse_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             use ultraapi::axum::response::sse::Sse;
             use std::convert::Infallible;
 
+            let depends_cache = ultraapi::RequestDependsCache::new();
             #path_extraction
             #(#dep_extractions)*
 
@@ -1758,14 +2366,19 @@ fn sse_macro_impl(attr: TokenStream, item: TokenStream) -> TokenStream {
             description: #description,
             tags: &[#(#tags),*],
             security: &[#(#security_schemes),*],
+            dependencies: &[],
             query_params_fn: None,
+            has_query_params: false,
             response_model_options: ultraapi::ResponseModelOptions {
                 include: None,
                 exclude: None,
                 by_alias: false,
+                exclude_none: false,
+                exclude_unset: false,
+                exclude_defaults: false,
                 content_type: None,
             },
-            response_class: ultraapi::ResponseClass::Stream, // SSE uses stream
+            response_class: ultraapi::ResponseClass::Sse,
             summary: None,
             deprecated: false,
             external_docs_url: None,
@@ -1932,95 +2545,168 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
     let mut serde_attrs_for_fields = Vec::new();
     // Collect field name -> alias mappings for response_model shaping
     let mut field_aliases: Vec<(String, String)> = Vec::new();
+    // Collect field name -> default value expressions for exclude_defaults shaping
+    let mut field_defaults: Vec<(String, TokenStream2)> = Vec::new();
 
     for field in fields {
         let field_name = field.ident.as_ref().unwrap();
         let mut schema_field_name_str = field_name.to_string();
-        let mut field_serde_attrs = Vec::new();
         let mut skip_field = false;
         let mut skip_serializing = false;
         let mut skip_deserializing = false;
         let mut read_only = false;
         let mut write_only = false;
+        let mut field_deprecated = false;
+        let mut has_custom_rename = false; // from #[alias(...)]
+        let mut field_default_expr: Option<TokenStream2> = None;
 
-        // Parse custom attributes: alias, skip, skip_serializing, skip_deserializing, read_only, write_only
-        // Also support standard serde attributes
+        // Collect passthrough serde items (not managed by us: default, flatten, with, etc.)
+        let mut passthrough_serde_items: Vec<proc_macro2::TokenStream> = Vec::new();
+        // Track and merge existing #[serde(...)] managed items plus passthrough items.
+
+        // Parse custom attributes and serde attributes together.
+        // We strip all #[serde(...)] from the clean field and rebuild a merged one.
         for attr in &field.attrs {
             if attr.path().is_ident("alias") {
-                // Custom #[alias("name")] attribute - parse directly from meta
+                // Custom #[alias("name")] attribute
                 if let syn::Meta::List(list) = &attr.meta {
-                    // Parse the tokens as a lit_str
                     let alias_str: Result<syn::LitStr, _> = list.parse_args();
                     if let Ok(lit) = alias_str {
                         schema_field_name_str = lit.value();
-                        field_serde_attrs.push(quote! { rename = #schema_field_name_str });
+                        has_custom_rename = true;
                     }
                 }
             } else if attr.path().is_ident("skip") {
-                // Custom #[skip] attribute - skip both serialization and deserialization
                 skip_field = true;
                 skip_serializing = true;
                 skip_deserializing = true;
             } else if attr.path().is_ident("skip_serializing") {
-                // Custom #[skip_serializing] attribute
                 skip_serializing = true;
             } else if attr.path().is_ident("skip_deserializing") {
-                // Custom #[skip_deserializing] attribute
                 skip_deserializing = true;
             } else if attr.path().is_ident("read_only") {
-                // Custom #[read_only] attribute - field appears in response but not in request
                 read_only = true;
-                skip_deserializing = true; // Don't accept in request body
+                skip_deserializing = true;
             } else if attr.path().is_ident("write_only") {
-                // Custom #[write_only] attribute - field appears in request but not in response
                 write_only = true;
-                skip_serializing = true; // Don't include in response
+                skip_serializing = true;
+            } else if attr.path().is_ident("deprecated") {
+                field_deprecated = true;
             } else if attr.path().is_ident("serde") {
-                // Standard serde attributes (rename, skip, etc.)
-                let _ = attr.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("rename") {
-                        let value = meta.value()?;
-                        let lit: syn::LitStr = value.parse()?;
-                        schema_field_name_str = lit.value();
-                        field_serde_attrs.push(quote! { rename = #schema_field_name_str });
-                    } else if meta.path.is_ident("skip") {
-                        skip_field = true;
-                        skip_serializing = true;
-                        skip_deserializing = true;
-                    } else if meta.path.is_ident("skip_serializing") {
-                        skip_serializing = true;
-                    } else if meta.path.is_ident("skip_deserializing") {
-                        skip_deserializing = true;
+                // Parse existing serde attr: extract managed items and keep the rest as passthrough.
+                if let syn::Meta::List(list) = &attr.meta {
+                    let parser =
+                        syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated;
+                    if let Ok(items) = parser.parse2(list.tokens.clone()) {
+                        for item in &items {
+                            match item {
+                                syn::Meta::Path(p) if p.is_ident("skip") => {
+                                    skip_field = true;
+                                    skip_serializing = true;
+                                    skip_deserializing = true;
+                                }
+                                syn::Meta::Path(p) if p.is_ident("skip_serializing") => {
+                                    skip_serializing = true;
+                                }
+                                syn::Meta::Path(p) if p.is_ident("skip_deserializing") => {
+                                    skip_deserializing = true;
+                                }
+                                syn::Meta::Path(p) if p.is_ident("default") => {
+                                    let field_ty = &field.ty;
+                                    field_default_expr = Some(
+                                        quote! { <#field_ty as ::core::default::Default>::default() },
+                                    );
+                                    passthrough_serde_items.push(quote! { default });
+                                }
+                                syn::Meta::NameValue(nv) if nv.path.is_ident("default") => {
+                                    match &nv.value {
+                                        syn::Expr::Lit(syn::ExprLit {
+                                            lit: syn::Lit::Str(s),
+                                            ..
+                                        }) => {
+                                            if let Ok(default_fn) =
+                                                syn::parse_str::<syn::Path>(&s.value())
+                                            {
+                                                field_default_expr = Some(quote! { #default_fn() });
+                                            }
+                                        }
+                                        syn::Expr::Path(path_expr) => {
+                                            let default_fn = &path_expr.path;
+                                            field_default_expr = Some(quote! { #default_fn() });
+                                        }
+                                        syn::Expr::Call(call_expr) => {
+                                            let call = &call_expr;
+                                            field_default_expr = Some(quote! { #call });
+                                        }
+                                        _ => {}
+                                    }
+                                    // Kept as passthrough so it gets re-emitted
+                                    passthrough_serde_items.push(quote! { #item });
+                                }
+                                syn::Meta::NameValue(nv) if nv.path.is_ident("rename") => {
+                                    if let syn::Expr::Lit(syn::ExprLit {
+                                        lit: syn::Lit::Str(s),
+                                        ..
+                                    }) = &nv.value
+                                    {
+                                        schema_field_name_str = s.value();
+                                    }
+                                    // Kept as passthrough so it gets re-emitted
+                                    passthrough_serde_items.push(quote! { #item });
+                                }
+                                other => {
+                                    // Unknown serde item — keep as passthrough
+                                    passthrough_serde_items.push(quote! { #other });
+                                }
+                            }
+                        }
                     }
-                    Ok(())
-                });
+                }
             }
         }
 
-        // Build serde attribute for this field if needed
-        // Only add if not already present (check if field already has a serde attribute)
-        let has_serde_attr = field.attrs.iter().any(|a| a.path().is_ident("serde"));
-
-        // Collect all serde-related parts: rename from alias + skip attributes
-        let mut all_serde_parts: Vec<proc_macro2::TokenStream> = Vec::new();
-
-        // Add rename from alias if present
-        for attr in &field_serde_attrs {
-            all_serde_parts.push(attr.clone());
+        // Option<T> fields deserialize from missing key as None by default.
+        // Register this for exclude_defaults parity even without explicit serde(default).
+        if field_default_expr.is_none() {
+            if let Some(inner_ty) = option_inner_type(&field.ty) {
+                field_default_expr = Some(quote! { ::core::option::Option::<#inner_ty>::None });
+            }
         }
 
-        // Add skip attributes - but not twice if read_only/write_only already set them
-        // Note: read_only sets skip_deserializing, write_only sets skip_serializing
-        if skip_serializing && !has_serde_attr {
-            all_serde_parts.push(quote! { skip_serializing });
-        }
-        if skip_deserializing && !has_serde_attr {
-            all_serde_parts.push(quote! { skip_deserializing });
+        // Build merged serde attribute from passthrough items + managed state.
+        // We strip ALL original #[serde(...)] from clean_field and emit a single rebuilt one.
+        let mut merged_serde_parts: Vec<proc_macro2::TokenStream> = Vec::new();
+
+        // 1. Passthrough items (except rename if we have a custom rename override)
+        if has_custom_rename {
+            // Custom #[alias] overrides any existing serde(rename)
+            merged_serde_parts.extend(
+                passthrough_serde_items
+                    .iter()
+                    .filter(|t| !t.to_string().starts_with("rename"))
+                    .cloned(),
+            );
+            merged_serde_parts.push(quote! { rename = #schema_field_name_str });
+        } else {
+            merged_serde_parts.extend(passthrough_serde_items);
         }
 
-        // Only add serde attribute if there are parts to add AND no existing serde attribute
-        if !all_serde_parts.is_empty() && !has_serde_attr {
-            let serde_attr = quote! { #[serde(#(#all_serde_parts),*)] };
+        // 2. Skip attributes — emit exactly one skip variant based on final state.
+        //    Both existing serde attrs and custom attrs feed into the booleans above.
+        if skip_field {
+            merged_serde_parts.push(quote! { skip });
+        } else {
+            if skip_serializing {
+                merged_serde_parts.push(quote! { skip_serializing });
+            }
+            if skip_deserializing {
+                merged_serde_parts.push(quote! { skip_deserializing });
+            }
+        }
+
+        // Emit merged serde attribute if there are any parts
+        if !merged_serde_parts.is_empty() {
+            let serde_attr = quote! { #[serde(#(#merged_serde_parts),*)] };
             serde_attrs_for_fields.push((field_name.clone(), serde_attr));
         }
 
@@ -2028,7 +2714,13 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         // This is used by response_model shaping to convert between field names and aliases
         let rust_field_name = field_name.to_string();
         if rust_field_name != schema_field_name_str {
-            field_aliases.push((rust_field_name, schema_field_name_str.clone()));
+            field_aliases.push((rust_field_name.clone(), schema_field_name_str.clone()));
+        }
+
+        if !skip_field && !skip_serializing {
+            if let Some(default_expr) = field_default_expr.clone() {
+                field_defaults.push((rust_field_name.clone(), default_expr));
+            }
         }
 
         // Extract doc comment for field description
@@ -2056,7 +2748,6 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                 }
             });
         }
-
         for attr in &field.attrs {
             if attr.path().is_ident("validate") {
                 let _ = attr.parse_nested_meta(|meta| {
@@ -2191,10 +2882,29 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                                 prop.example = Some(#example_val.to_string());
                             }
                         });
+                    } else if meta.path.is_ident("deprecated") {
+                        // Support #[schema(deprecated)] and #[schema(deprecated = true/false)]
+                        let mut deprecated_value = true;
+                        if meta.input.peek(syn::Token![=]) {
+                            let value = meta.value()?;
+                            let lit: syn::LitBool = value.parse()?;
+                            deprecated_value = lit.value;
+                        }
+                        if deprecated_value {
+                            field_deprecated = true;
+                        }
                     }
                     Ok(())
                 });
             }
+        }
+
+        if field_deprecated {
+            schema_patches.push(quote! {
+                if let Some(prop) = props.get_mut(#schema_field_name_str) {
+                    prop.deprecated = Some(true);
+                }
+            });
         }
 
         let mut clean_field = field.clone();
@@ -2207,6 +2917,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                 && !a.path().is_ident("skip_deserializing")
                 && !a.path().is_ident("read_only")
                 && !a.path().is_ident("write_only")
+                && !a.path().is_ident("serde") // stripped; rebuilt as merged attr
         });
         clean_fields.push((field_name.clone(), clean_field));
     }
@@ -2275,6 +2986,38 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                             for (k, v) in PAIRS {
                                 m.insert(k.to_string(), v.to_string());
                             }
+                            m
+                        })
+                    },
+                }
+            }
+        })
+    } else {
+        None
+    };
+
+    let default_registration = if !field_defaults.is_empty() {
+        let default_inserts: Vec<_> = field_defaults
+            .iter()
+            .map(|(field_name, default_expr)| {
+                let field_name_lit = field_name.as_str();
+                quote! {
+                    if let Ok(default_value) = ultraapi::serde_json::to_value(#default_expr) {
+                        m.insert(#field_name_lit.to_string(), default_value);
+                    }
+                }
+            })
+            .collect();
+
+        Some(quote! {
+            ultraapi::inventory::submit! {
+                ultraapi::FieldDefaultInfo {
+                    type_name: #name_str,
+                    get_defaults: || {
+                        static MAP: std::sync::OnceLock<std::collections::HashMap<String, ultraapi::serde_json::Value>> = std::sync::OnceLock::new();
+                        MAP.get_or_init(|| {
+                            let mut m = std::collections::HashMap::new();
+                            #(#default_inserts)*
                             m
                         })
                     },
@@ -2354,6 +3097,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
                                 if patch.example.is_some() { prop.example = patch.example.clone(); }
                                 if patch.read_only.is_some() { prop.read_only = patch.read_only.unwrap_or(false); }
                                 if patch.write_only.is_some() { prop.write_only = patch.write_only.unwrap_or(false); }
+                                if patch.deprecated.is_some() { prop.deprecated = patch.deprecated.unwrap_or(false); }
                             }
                         }
                         schema
@@ -2371,6 +3115,7 @@ fn api_model_struct(input: ItemStruct, custom_validation_fn: Option<Path>) -> To
         }
 
         #alias_registration
+        #default_registration
     };
 
     output.into()

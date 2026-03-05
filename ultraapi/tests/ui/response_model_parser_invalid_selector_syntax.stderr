@@ -1,0 +1,5 @@
+error: include/exclude value must use {...} set/dict syntax
+ --> tests/ui/response_model_parser_invalid_selector_syntax.rs:4:28
+  |
+4 | #[response_model(include = ["id", "profile"])]
+  |                            ^^^^^^^^^^^^^^^^^

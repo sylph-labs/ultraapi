@@ -132,7 +132,7 @@ async fn create_item(body: CreateItemRequest, pool: Dep<SqlitePool>) -> Result<I
 // =============================================================================
 
 fn api_router() -> UltraApiRouter {
-    UltraApiRouter::new("/")  // This should now work with double-slash normalization
+    UltraApiRouter::new("/") // This should now work with double-slash normalization
         .route(__HAYAI_ROUTE_GET_ITEMS)
         .route(__HAYAI_ROUTE_GET_ITEM)
         .route(__HAYAI_ROUTE_CREATE_ITEM)

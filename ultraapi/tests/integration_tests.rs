@@ -991,8 +991,9 @@ fn test_router_security_applied() {
         .route(__HAYAI_ROUTE_RT_SECURED_ROUTE);
     let resolved = router.resolve("", &[], &[]);
     let sec = resolved[0].merged_security();
-    assert!(sec.contains(&"api_key"));
-    assert!(sec.contains(&"bearer"));
+    assert_eq!(sec.len(), 1);
+    assert_eq!(sec[0].get("api_key"), Some(&Vec::<String>::new()));
+    assert_eq!(sec[0].get("bearerAuth"), Some(&Vec::<String>::new()));
 }
 
 #[test]
@@ -1030,7 +1031,8 @@ fn test_router_tags_security_propagate_through_nesting() {
     let tags = resolved[0].merged_tags();
     assert!(tags.contains(&"api".to_string()));
     let sec = resolved[0].merged_security();
-    assert!(sec.contains(&"bearer"));
+    assert_eq!(sec.len(), 1);
+    assert_eq!(sec[0].get("bearerAuth"), Some(&Vec::<String>::new()));
 }
 
 #[test]

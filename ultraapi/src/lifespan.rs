@@ -139,6 +139,22 @@ pub struct LifespanRunner {
     inner: Arc<LifespanRunnerInner>,
 }
 
+async fn run_shutdown_once(inner: Arc<LifespanRunnerInner>) {
+    // If the app never served a request, users still expect shutdown to be safe.
+    // We don't forcibly run startup here, but we do allow shutdown to run.
+    let lifecycle = inner.lifecycle.clone();
+    let state = inner.state.clone();
+    let notify = inner.shutdown_notify.clone();
+
+    inner
+        .shutdown_once
+        .get_or_init(|| async move {
+            lifecycle.run_shutdown(&state).await;
+            notify.notify_waiters();
+        })
+        .await;
+}
+
 impl LifespanRunner {
     /// Create a new LifespanRunner.
     pub fn new(lifecycle: Lifecycle, state: AppState) -> Self {
@@ -174,19 +190,7 @@ impl LifespanRunner {
 
     /// Trigger shutdown hooks (at most once) and notify waiters.
     pub async fn shutdown(&self) {
-        // If the app never served a request, users still expect shutdown to be safe.
-        // We don't forcibly run startup here, but we do allow shutdown to run.
-        let lifecycle = self.inner.lifecycle.clone();
-        let state = self.inner.state.clone();
-        let notify = self.inner.shutdown_notify.clone();
-
-        self.inner
-            .shutdown_once
-            .get_or_init(|| async move {
-                lifecycle.run_shutdown(&state).await;
-                notify.notify_waiters();
-            })
-            .await;
+        run_shutdown_once(self.inner.clone()).await;
     }
 
     /// Wait for shutdown to be triggered.
@@ -216,6 +220,24 @@ impl LifespanRunner {
                     }
                 },
             ))
+        }
+    }
+}
+
+impl Drop for LifespanRunner {
+    fn drop(&mut self) {
+        // Last handle dropped: trigger shutdown hooks in compatibility mode so
+        // `UltraApiApp::into_router()` can behave like FastAPI-style lifespan
+        // without requiring an explicit runner.
+        if Arc::strong_count(&self.inner) != 1 || self.inner.shutdown_once.get().is_some() {
+            return;
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let inner = self.inner.clone();
+            handle.spawn(async move {
+                run_shutdown_once(inner).await;
+            });
         }
     }
 }

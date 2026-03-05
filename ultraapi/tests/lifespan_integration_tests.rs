@@ -121,6 +121,25 @@ async fn test_into_router_lazy_startup_on_first_request() {
     assert_eq!(counts.startup_count(), 1);
 }
 
+/// Test that `into_router()` also triggers shutdown on drop in compatibility mode.
+#[tokio::test]
+async fn test_into_router_runs_shutdown_on_drop() {
+    let counts = Counts::new();
+    let app = app_with_counts(counts.clone());
+
+    {
+        let router = app.into_router();
+        let client = TestClient::new_router_in_process(router);
+        let resp = client.get("/docs").await;
+        assert_eq!(resp.status(), 200);
+        assert_eq!(counts.startup_count(), 1);
+    }
+
+    // Drop-triggered shutdown runs asynchronously.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(counts.shutdown_count(), 1);
+}
+
 /// Test both hooks together.
 #[tokio::test]
 async fn test_lifecycle_both_hooks() {

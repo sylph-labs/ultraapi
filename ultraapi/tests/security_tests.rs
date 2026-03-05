@@ -46,12 +46,11 @@ async fn test_public_route_accessible_without_auth() {
 }
 
 #[tokio::test]
-async fn test_protected_route_without_auth_currently_returns_200() {
+async fn test_protected_route_without_auth_returns_401() {
     let base = spawn_app_with_security().await;
     let resp = reqwest::get(format!("{base}/protected")).await.unwrap();
 
-    // UltraAPI currently documents security in OpenAPI but does not enforce it at runtime.
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 401);
 }
 
 #[tokio::test]
@@ -71,7 +70,7 @@ async fn test_protected_route_with_valid_token_currently_returns_200() {
 }
 
 #[tokio::test]
-async fn test_protected_route_with_invalid_token_currently_returns_200() {
+async fn test_protected_route_with_invalid_token_returns_401() {
     let base = spawn_app_with_security().await;
     let client = reqwest::Client::new();
     let resp = client
@@ -81,7 +80,7 @@ async fn test_protected_route_with_invalid_token_currently_returns_200() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.status(), 401);
 }
 
 #[tokio::test]
@@ -265,12 +264,10 @@ async fn test_security_scheme_documented_in_info() {
     assert!(body["components"].get("securitySchemes").is_some());
 }
 
-// ===== Auth Enforcement Note =====
+// ===== Auth Enforcement =====
 
-// Note: UltraAPI currently documents security in OpenAPI but doesn't enforce it.
-// Runtime auth enforcement should be implemented via custom middleware.
 #[tokio::test]
-async fn test_auth_enforcement_not_implemented_yet() {
+async fn test_auth_enforcement_for_bearer_protected_route() {
     let base = spawn_app_with_security().await;
 
     // Without token
@@ -293,10 +290,9 @@ async fn test_auth_enforcement_not_implemented_yet() {
         .await
         .unwrap();
 
-    // All requests currently succeed because auth is documentation-only.
-    assert_eq!(no_token.status(), 200);
+    assert_eq!(no_token.status(), 401);
     assert_eq!(valid_token.status(), 200);
-    assert_eq!(invalid_token.status(), 200);
+    assert_eq!(invalid_token.status(), 401);
 }
 
 // ===== API Key Security Scheme Test =====
@@ -662,6 +658,82 @@ async fn test_auth_enforcement_respects_http_method() {
         .await
         .unwrap();
     assert_eq!(post_resp.status(), 401);
+}
+
+#[get("/scheme-locked/bearer")]
+#[security("bearer")]
+async fn scheme_locked_bearer_route() -> String {
+    "bearer only".to_string()
+}
+
+#[get("/scheme-locked/api-key")]
+#[security("apiKeyAuth")]
+async fn scheme_locked_api_key_route() -> String {
+    "api-key only".to_string()
+}
+
+#[tokio::test]
+async fn test_runtime_rejects_credentials_from_wrong_security_scheme() {
+    use ultraapi::middleware::SecuritySchemeConfig;
+
+    let app = UltraApiApp::new()
+        .title("Route Security Scheme Enforcement Test")
+        .version("0.1.0")
+        .bearer_auth()
+        .security_scheme(
+            "apiKeyAuth",
+            ultraapi::openapi::SecurityScheme::ApiKey {
+                name: "X-API-Key".to_string(),
+                location: "header".to_string(),
+            },
+        )
+        .middleware(|builder| {
+            builder.enable_auth().with_security_schemes(vec![
+                SecuritySchemeConfig::bearer("bearerAuth"),
+                SecuritySchemeConfig::api_key_header("apiKeyAuth", "X-API-Key"),
+            ])
+        })
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        ultraapi::axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+
+    let bearer_ok = client
+        .get(format!("http://{}/scheme-locked/bearer", addr))
+        .header("Authorization", "Bearer valid-bearer-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bearer_ok.status(), 200);
+
+    let bearer_wrong_scheme = client
+        .get(format!("http://{}/scheme-locked/bearer", addr))
+        .header("X-API-Key", "valid-api-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bearer_wrong_scheme.status(), 401);
+
+    let api_key_ok = client
+        .get(format!("http://{}/scheme-locked/api-key", addr))
+        .header("X-API-Key", "valid-api-key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(api_key_ok.status(), 200);
+
+    let api_key_wrong_scheme = client
+        .get(format!("http://{}/scheme-locked/api-key", addr))
+        .header("Authorization", "Bearer valid-bearer-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(api_key_wrong_scheme.status(), 401);
 }
 
 #[get("/router-level-auth")]
@@ -1050,6 +1122,12 @@ async fn scope_read_route() -> String {
     "read data".to_string()
 }
 
+#[get("/scope-read-attr")]
+#[security("bearer:read")]
+async fn scope_read_attr_route() -> String {
+    "read data (route scoped)".to_string()
+}
+
 #[tokio::test]
 async fn test_scope_validation_success() {
     use ultraapi::middleware::{MockAuthValidator, ScopedAuthValidator, SecuritySchemeConfig};
@@ -1135,6 +1213,80 @@ async fn test_scope_validation_failure() {
         .unwrap();
     // Should fail with 403 Forbidden due to insufficient scope
     assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("Insufficient scope"));
+}
+
+#[tokio::test]
+async fn test_route_level_scope_attribute_validation_success() {
+    use ultraapi::middleware::{MockAuthValidator, ScopedAuthValidator, SecuritySchemeConfig};
+
+    let validator = ScopedAuthValidator::new(MockAuthValidator::new())
+        .with_scope("valid-read", vec!["read".to_string()])
+        .with_scope("valid-write", vec!["write".to_string()]);
+
+    let app = UltraApiApp::new()
+        .title("Route-level scope test")
+        .version("0.1.0")
+        .bearer_auth()
+        .middleware(|builder| {
+            builder
+                .enable_auth_with_validator(validator)
+                .with_security_scheme(SecuritySchemeConfig::bearer("bearerAuth"))
+        })
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        ultraapi::axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("http://{}/scope-read-attr", addr))
+        .header("Authorization", "Bearer valid-read")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_route_level_scope_attribute_validation_failure() {
+    use ultraapi::middleware::{MockAuthValidator, ScopedAuthValidator, SecuritySchemeConfig};
+
+    let validator = ScopedAuthValidator::new(MockAuthValidator::new())
+        .with_scope("valid-write", vec!["write".to_string()]);
+
+    let app = UltraApiApp::new()
+        .title("Route-level scope test")
+        .version("0.1.0")
+        .bearer_auth()
+        .middleware(|builder| {
+            builder
+                .enable_auth_with_validator(validator)
+                .with_security_scheme(SecuritySchemeConfig::bearer("bearerAuth"))
+        })
+        .into_router();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        ultraapi::axum::serve(listener, app).await.unwrap();
+    });
+
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("http://{}/scope-read-attr", addr))
+        .header("Authorization", "Bearer valid-write")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+
     let body = resp.text().await.unwrap();
     assert!(body.contains("Insufficient scope"));
 }

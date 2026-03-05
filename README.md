@@ -314,6 +314,9 @@ cargo run --bin ultraapi -- dev ultraapi-example --port 3001
 - `#[security("oauth2Password")]`: OAuth2 Password Flow (reflected in OpenAPI)
 - `#[security("oauth2AuthCode")]`: OAuth2 Authorization Code Flow (reflected in OpenAPI)
 - `#[security("oauth2Implicit")]`: OAuth2 Implicit Flow (reflected in OpenAPI)
+- `#[security("bearer&&apiKeyAuth")]`: AND requirement (single OpenAPI Security Requirement Object)
+- `#[security("bearer||apiKeyAuth")]`: OR alternatives within one attribute (multiple `#[security(...)]` are also OR)
+- `#[dependencies(Depends<MyDep>, ...)]`: Run route-level dependencies without adding handler args (FastAPI-style)
 
 #### OAuth2 Dependency Objects
 

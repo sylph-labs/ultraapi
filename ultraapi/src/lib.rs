@@ -10,7 +10,7 @@ pub mod streaming;
 pub mod templates;
 pub mod test_client;
 
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use std::pin::Pin;
@@ -18,7 +18,7 @@ use std::pin::Pin;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use serde::Serialize;
 use std::any::{Any, TypeId};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -77,6 +77,7 @@ pub mod prelude {
         lifespan::Lifecycle,
         middleware::{
             create_bearer_auth_error,
+            AuthDefaultPolicy,
             CompressionConfig,
             CorsConfig,
             GZipConfig,
@@ -101,8 +102,9 @@ pub mod prelude {
     pub use crate::{
         test_client::{InProcessTestClient, TestClient, TestResponse},
         ApiError, CookieOptions, CookieResponse, Dep, DependencyScope, Depends, FileResponse,
-        Generator, RedirectResponse, ResponseClass, ResponseModelOptions, Scope, State,
-        StreamingResponse, UltraApiApp, UltraApiRouter, Validate, YieldDep,
+        Generator, HTTPException, HttpException, HttpExceptionDetail, RedirectResponse,
+        ResponseClass, ResponseModelOptions, Scope, State, StreamingResponse, UltraApiApp,
+        UltraApiRouter, Validate, YieldDep,
     };
     pub use axum::extract::{Form, Multipart, Path, Query};
     pub use axum_extra::extract::{CookieJar, TypedHeader};
@@ -296,10 +298,14 @@ pub trait HasSchemaPatches {
     fn patch_schema(props: &mut HashMap<String, openapi::PropertyPatch>);
 }
 
+type RequestDepFactory = Arc<dyn Fn(&AppState) -> Arc<dyn Any + Send + Sync> + Send + Sync>;
+
 /// Application state holding dependency injection container
 #[derive(Clone)]
 pub struct AppState {
     deps: Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+    /// Per-request dependency factories (fresh instance on each extraction)
+    request_dep_factories: Arc<HashMap<TypeId, RequestDepFactory>>,
     /// Optional resolver for Depends function-based dependencies
     depends_resolver: Option<Arc<DependsResolver>>,
 }
@@ -314,15 +320,24 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             deps: Arc::new(HashMap::new()),
+            request_dep_factories: Arc::new(HashMap::new()),
             depends_resolver: None,
         }
     }
 
     /// Get a registered dependency
     pub fn get<T: 'static + Send + Sync>(&self) -> Option<Arc<T>> {
-        self.deps
+        if let Some(dep) = self
+            .deps
             .get(&TypeId::of::<T>())
             .and_then(|v| v.clone().downcast::<T>().ok())
+        {
+            return Some(dep);
+        }
+
+        self.request_dep_factories
+            .get(&TypeId::of::<T>())
+            .and_then(|factory| factory(self).downcast::<T>().ok())
     }
 
     /// Get the Depends resolver if available
@@ -730,6 +745,200 @@ impl<T: 'static + Send + Sync> std::ops::Deref for Depends<T> {
     }
 }
 
+/// Parameter resolver for callable dependency signatures.
+///
+/// This powers FastAPI-style declarations in `.depends(...)`, e.g.
+/// `Depends<T>`, `Dep<T>`, `State<T>`, or `AppState`.
+pub trait DependencyParam: Sized {
+    /// Resolve this parameter from the current `AppState`.
+    fn resolve(state: &AppState) -> Result<Self, DependencyError>;
+
+    /// Additional dependency type IDs required before this parameter can resolve.
+    fn declared_dependencies() -> Vec<TypeId> {
+        Vec::new()
+    }
+}
+
+impl DependencyParam for AppState {
+    fn resolve(state: &AppState) -> Result<Self, DependencyError> {
+        Ok(state.clone())
+    }
+}
+
+impl<T: 'static + Send + Sync> DependencyParam for Dep<T> {
+    fn resolve(state: &AppState) -> Result<Self, DependencyError> {
+        state
+            .get::<T>()
+            .map(Dep)
+            .ok_or_else(|| DependencyError::missing(std::any::type_name::<T>()))
+    }
+
+    fn declared_dependencies() -> Vec<TypeId> {
+        vec![TypeId::of::<T>()]
+    }
+}
+
+impl<T: 'static + Send + Sync> DependencyParam for State<T> {
+    fn resolve(state: &AppState) -> Result<Self, DependencyError> {
+        state
+            .get::<T>()
+            .map(State)
+            .ok_or_else(|| DependencyError::missing(std::any::type_name::<T>()))
+    }
+
+    fn declared_dependencies() -> Vec<TypeId> {
+        vec![TypeId::of::<T>()]
+    }
+}
+
+impl<T: 'static + Send + Sync> DependencyParam for Depends<T> {
+    fn resolve(state: &AppState) -> Result<Self, DependencyError> {
+        state
+            .get::<T>()
+            .map(Depends)
+            .ok_or_else(|| DependencyError::missing(std::any::type_name::<T>()))
+    }
+
+    fn declared_dependencies() -> Vec<TypeId> {
+        vec![TypeId::of::<T>()]
+    }
+}
+
+impl<T: 'static + Send + Sync> DependencyParam for Arc<T> {
+    fn resolve(state: &AppState) -> Result<Self, DependencyError> {
+        state
+            .get::<T>()
+            .ok_or_else(|| DependencyError::missing(std::any::type_name::<T>()))
+    }
+
+    fn declared_dependencies() -> Vec<TypeId> {
+        vec![TypeId::of::<T>()]
+    }
+}
+
+/// Callable dependency function registered via `UltraApiApp::depends*`.
+///
+/// Implemented for function signatures up to 3 parameters.
+pub trait CallableDependency<T, Sig>: Send + Sync + 'static {
+    /// Dependency type IDs required by this callable signature.
+    fn declared_dependencies() -> Vec<TypeId>
+    where
+        Self: Sized;
+
+    /// Invoke dependency function after extracting signature parameters.
+    fn call(
+        &self,
+        state: AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<T, DependencyError>> + Send + 'static>>;
+}
+
+impl<T, F, R> CallableDependency<T, ()> for F
+where
+    T: Send + Sync + 'static,
+    F: Fn() -> R + Send + Sync + 'static,
+    R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+{
+    fn declared_dependencies() -> Vec<TypeId> {
+        Vec::new()
+    }
+
+    fn call(
+        &self,
+        _state: AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<T, DependencyError>> + Send + 'static>> {
+        Box::pin((self)())
+    }
+}
+
+impl<T, F, R, A> CallableDependency<T, (A,)> for F
+where
+    T: Send + Sync + 'static,
+    F: Fn(A) -> R + Send + Sync + 'static,
+    R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+    A: DependencyParam + Send + 'static,
+{
+    fn declared_dependencies() -> Vec<TypeId> {
+        A::declared_dependencies()
+    }
+
+    fn call(
+        &self,
+        state: AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<T, DependencyError>> + Send + 'static>> {
+        let a = match A::resolve(&state) {
+            Ok(value) => value,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        Box::pin((self)(a))
+    }
+}
+
+impl<T, F, R, A, B> CallableDependency<T, (A, B)> for F
+where
+    T: Send + Sync + 'static,
+    F: Fn(A, B) -> R + Send + Sync + 'static,
+    R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+    A: DependencyParam + Send + 'static,
+    B: DependencyParam + Send + 'static,
+{
+    fn declared_dependencies() -> Vec<TypeId> {
+        let mut deps = A::declared_dependencies();
+        deps.extend(B::declared_dependencies());
+        deps
+    }
+
+    fn call(
+        &self,
+        state: AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<T, DependencyError>> + Send + 'static>> {
+        let a = match A::resolve(&state) {
+            Ok(value) => value,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        let b = match B::resolve(&state) {
+            Ok(value) => value,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        Box::pin((self)(a, b))
+    }
+}
+
+impl<T, F, R, A, B, C> CallableDependency<T, (A, B, C)> for F
+where
+    T: Send + Sync + 'static,
+    F: Fn(A, B, C) -> R + Send + Sync + 'static,
+    R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+    A: DependencyParam + Send + 'static,
+    B: DependencyParam + Send + 'static,
+    C: DependencyParam + Send + 'static,
+{
+    fn declared_dependencies() -> Vec<TypeId> {
+        let mut deps = A::declared_dependencies();
+        deps.extend(B::declared_dependencies());
+        deps.extend(C::declared_dependencies());
+        deps
+    }
+
+    fn call(
+        &self,
+        state: AppState,
+    ) -> Pin<Box<dyn Future<Output = Result<T, DependencyError>> + Send + 'static>> {
+        let a = match A::resolve(&state) {
+            Ok(value) => value,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        let b = match B::resolve(&state) {
+            Ok(value) => value,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        let c = match C::resolve(&state) {
+            Ok(value) => value,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        Box::pin((self)(a, b, c))
+    }
+}
+
 /// Internal: Wrapper for dependency functions that stores metadata
 #[allow(clippy::type_complexity)]
 struct DependsFunc {
@@ -751,6 +960,77 @@ struct DependsFunc {
     output_type_name: &'static str,
 }
 
+/// Request-local cache for `Depends` resolution.
+///
+/// This cache keeps resolved dependency instances for a single request so repeated
+/// `Depends<T>` lookups share the same value (FastAPI `use_cache=true` equivalent).
+#[derive(Default)]
+pub struct RequestDependsCache {
+    values: parking_lot::RwLock<HashMap<TypeId, Arc<dyn std::any::Any + Send + Sync>>>,
+}
+
+impl RequestDependsCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get_any(&self, type_id: TypeId) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.values.read().get(&type_id).cloned()
+    }
+
+    pub fn insert_any(&self, type_id: TypeId, value: Arc<dyn std::any::Any + Send + Sync>) {
+        self.values.write().insert(type_id, value);
+    }
+
+    pub fn get<T: 'static + Send + Sync>(&self) -> Option<Arc<T>> {
+        self.get_any(TypeId::of::<T>())
+            .and_then(|value| value.downcast::<T>().ok())
+    }
+
+    pub fn insert<T: 'static + Send + Sync>(&self, value: Arc<T>) {
+        let erased: Arc<dyn std::any::Any + Send + Sync> = value;
+        self.insert_any(TypeId::of::<T>(), erased);
+    }
+}
+
+/// Resolve a route-level dependency declared via `#[dependencies(...)]`.
+///
+/// This uses the same request-local cache and generator cleanup scope as regular
+/// `Depends<T>` parameters, but does not pass the value to the handler.
+pub async fn resolve_route_dependency<T: 'static + Send + Sync>(
+    state: &AppState,
+    dependency_scope: &DependencyScope,
+    request_cache: &RequestDependsCache,
+) -> Result<Arc<T>, ApiError> {
+    if let Some(resolver) = state.get_depends_resolver() {
+        if resolver.is_generator::<T>() {
+            let dep_any = resolver
+                .resolve_generator::<T>(state, dependency_scope)
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))?;
+
+            dep_any.downcast::<T>().map_err(|_| {
+                ApiError::internal(format!(
+                    "Type mismatch for generator: {}",
+                    std::any::type_name::<T>()
+                ))
+            })
+        } else {
+            resolver
+                .resolve_with_cache::<T>(state, request_cache)
+                .await
+                .map_err(|e| ApiError::internal(e.to_string()))
+        }
+    } else {
+        state.get::<T>().ok_or_else(|| {
+            ApiError::internal(format!(
+                "Dependency not registered: {}",
+                std::any::type_name::<T>()
+            ))
+        })
+    }
+}
+
 /// Thread-safe resolver for Depends dependencies with cycle detection
 pub struct DependsResolver {
     // Map from TypeId to the registered dependency function
@@ -759,6 +1039,8 @@ pub struct DependsResolver {
     generators: parking_lot::RwLock<HashMap<TypeId, GeneratorRegistryEntry>>,
     // Map from TypeId to dependency chain info (what deps this dependency needs)
     dep_chains: parking_lot::RwLock<HashMap<TypeId, Vec<TypeId>>>,
+    // Map from TypeId to request-cache behavior (FastAPI Depends(use_cache=...)).
+    dep_use_cache: parking_lot::RwLock<HashMap<TypeId, bool>>,
 }
 
 /// Entry for a registered generator
@@ -781,7 +1063,16 @@ impl DependsResolver {
             deps: parking_lot::RwLock::new(HashMap::new()),
             generators: parking_lot::RwLock::new(HashMap::new()),
             dep_chains: parking_lot::RwLock::new(HashMap::new()),
+            dep_use_cache: parking_lot::RwLock::new(HashMap::new()),
         }
+    }
+
+    fn use_cache_for(&self, type_id: TypeId) -> bool {
+        self.dep_use_cache
+            .read()
+            .get(&type_id)
+            .copied()
+            .unwrap_or(true)
     }
 
     /// Register a yield-based dependency (generator with cleanup)
@@ -882,8 +1173,25 @@ impl DependsResolver {
 
     /// Register a dependency function
     #[allow(clippy::type_complexity)]
-    pub fn register<T, F, R>(&self, _marker: std::marker::PhantomData<T>, func: F)
+    pub fn register<T, F, R>(&self, marker: std::marker::PhantomData<T>, func: F)
     where
+        T: Send + Sync + 'static,
+        F: Fn(AppState) -> R + Send + Sync + 'static,
+        R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+    {
+        self.register_with_cache(marker, func, true);
+    }
+
+    /// Register a dependency function with explicit request-cache behavior.
+    ///
+    /// `use_cache=false` behaves like FastAPI `Depends(..., use_cache=False)`.
+    #[allow(clippy::type_complexity)]
+    pub fn register_with_cache<T, F, R>(
+        &self,
+        _marker: std::marker::PhantomData<T>,
+        func: F,
+        use_cache: bool,
+    ) where
         T: Send + Sync + 'static,
         F: Fn(AppState) -> R + Send + Sync + 'static,
         R: Future<Output = Result<T, DependencyError>> + Send + 'static,
@@ -924,91 +1232,147 @@ impl DependsResolver {
                 output_type_name,
             },
         );
+
+        self.dep_use_cache
+            .write()
+            .insert(TypeId::of::<T>(), use_cache);
     }
 
-    /// Resolve a dependency with cycle detection
+    /// Resolve a dependency with cycle detection.
+    ///
+    /// For `depends_with_deps`, declared dependency chains are auto-resolved first and
+    /// injected into a temporary AppState passed to the dependency function.
     pub async fn resolve<T: 'static + Send + Sync>(
         &self,
         state: &AppState,
     ) -> Result<Arc<T>, DependencyError> {
-        // Track resolution chain for cycle detection
-        let mut visiting: std::collections::HashSet<TypeId> = std::collections::HashSet::new();
-        self.resolve_recursive::<T>(state, &mut visiting).await
+        let request_cache = RequestDependsCache::new();
+        self.resolve_with_cache::<T>(state, &request_cache).await
     }
 
-    #[allow(clippy::await_holding_lock)]
-    async fn resolve_recursive<T: 'static + Send + Sync>(
+    /// Resolve a dependency with an explicit request-local cache.
+    pub async fn resolve_with_cache<T: 'static + Send + Sync>(
         &self,
         state: &AppState,
-        visiting: &mut std::collections::HashSet<TypeId>,
+        request_cache: &RequestDependsCache,
     ) -> Result<Arc<T>, DependencyError> {
-        let type_id = TypeId::of::<T>();
+        let mut visiting: Vec<TypeId> = Vec::new();
 
-        // Cycle detection: if we're already visiting this type in the current chain
-        if visiting.contains(&type_id) {
-            let chain: Vec<String> = visiting
-                .iter()
-                .map(|tid| {
-                    // Find the dependency name (best effort)
-                    let deps = self.deps.read();
-                    for (registered_tid, func) in deps.iter() {
-                        if registered_tid == tid {
-                            return func.name.to_string();
+        let resolved = self
+            .resolve_type_id_recursive(TypeId::of::<T>(), state, &mut visiting, request_cache)
+            .await?;
+
+        resolved
+            .downcast::<T>()
+            .map_err(|_| DependencyError::missing(std::any::type_name::<T>()))
+    }
+
+    fn type_name_for_type_id(&self, type_id: TypeId) -> String {
+        self.deps
+            .read()
+            .get(&type_id)
+            .map(|func| func.name.to_string())
+            .unwrap_or_else(|| format!("{:?}", type_id))
+    }
+
+    fn chain_for_visiting(&self, visiting: &[TypeId]) -> Vec<String> {
+        visiting
+            .iter()
+            .map(|tid| self.type_name_for_type_id(*tid))
+            .collect()
+    }
+
+    fn resolve_type_id_recursive<'a>(
+        &'a self,
+        type_id: TypeId,
+        state: &'a AppState,
+        visiting: &'a mut Vec<TypeId>,
+        request_cache: &'a RequestDependsCache,
+    ) -> BoxFuture<'a, Result<Arc<dyn std::any::Any + Send + Sync>, DependencyError>> {
+        Box::pin(async move {
+            let use_cache = self.use_cache_for(type_id);
+
+            if use_cache {
+                if let Some(cached) = request_cache.get_any(type_id) {
+                    return Ok(cached);
+                }
+            }
+
+            if let Some(cycle_start) = visiting.iter().position(|tid| *tid == type_id) {
+                let mut chain: Vec<String> = visiting[cycle_start..]
+                    .iter()
+                    .map(|tid| self.type_name_for_type_id(*tid))
+                    .collect();
+                let dependency = self.type_name_for_type_id(type_id);
+                chain.push(dependency.clone());
+                return Err(DependencyError::cycle(&dependency, chain));
+            }
+
+            visiting.push(type_id);
+
+            // 1) Try concrete state dependencies / request factories first.
+            if let Some(dep) = state.deps.get(&type_id).cloned() {
+                if use_cache {
+                    request_cache.insert_any(type_id, Arc::clone(&dep));
+                }
+                visiting.pop();
+                return Ok(dep);
+            }
+            if let Some(factory) = state.request_dep_factories.get(&type_id) {
+                let dep = factory(state);
+                if use_cache {
+                    request_cache.insert_any(type_id, Arc::clone(&dep));
+                }
+                visiting.pop();
+                return Ok(dep);
+            }
+
+            // 2) Resolve declared dependency chain for this dependency (if any).
+            let declared_deps = self
+                .dep_chains
+                .read()
+                .get(&type_id)
+                .cloned()
+                .unwrap_or_default();
+
+            let mut merged_deps = (*state.deps).clone();
+            for dep_type_id in declared_deps {
+                let resolved_dep = self
+                    .resolve_type_id_recursive(dep_type_id, state, visiting, request_cache)
+                    .await?;
+                merged_deps.insert(dep_type_id, resolved_dep);
+            }
+
+            // 3) Resolve through registered Depends function.
+            let dep_func = self.deps.read().get(&type_id).map(|f| Arc::clone(&f.func));
+
+            let result = if let Some(func) = dep_func {
+                let scoped_state = AppState {
+                    deps: Arc::new(merged_deps),
+                    request_dep_factories: Arc::clone(&state.request_dep_factories),
+                    depends_resolver: state.depends_resolver.clone(),
+                };
+
+                match (func)(scoped_state).await {
+                    Ok(boxed) => {
+                        let resolved: Arc<dyn std::any::Any + Send + Sync> = boxed.into();
+                        if use_cache {
+                            request_cache.insert_any(type_id, Arc::clone(&resolved));
                         }
+                        Ok(resolved)
                     }
-                    format!("{:?}", tid)
-                })
-                .chain(std::iter::once(std::any::type_name::<T>().to_string()))
-                .collect();
+                    Err(e) => Err(e),
+                }
+            } else {
+                let dependency = self.type_name_for_type_id(type_id);
+                let mut chain = self.chain_for_visiting(visiting);
+                chain.push(dependency.clone());
+                Err(DependencyError::missing_with_chain(&dependency, chain))
+            };
 
-            return Err(DependencyError::cycle(std::any::type_name::<T>(), chain));
-        }
-
-        // Mark as visiting
-        visiting.insert(type_id);
-
-        // First, check if there are any nested dependencies registered via register_with_deps
-        // and resolve them first. This enables dependency chaining.
-        {
-            let chains = self.dep_chains.read();
-            if let Some(deps) = chains.get(&type_id) {
-                // We have registered deps - in a full implementation, we'd resolve them here
-                // For now, we store the dependency chain info and let the function access
-                // pre-resolved deps from AppState
-                let _deps = deps.clone(); // Placeholder for nested resolution
-            }
-        }
-
-        // First, try to get from AppState (backward compatibility with Dep<T>/State<T>)
-        if let Some(dep) = state.get::<T>() {
-            visiting.remove(&type_id);
-            return Ok(dep);
-        }
-
-        // Try to resolve via registered Depends function
-        let deps = self.deps.read();
-        if let Some(func) = deps.get(&type_id) {
-            let func = Arc::clone(&func.func);
-            drop(deps); // Release lock before async call
-
-            // Call the function to resolve the dependency
-            let boxed_result = (func)(state.clone()).await;
-
-            // Check for cycles after resolution
-            visiting.remove(&type_id);
-
-            // Convert Box<dyn Any + Send + Sync> to Arc<T>
-            match boxed_result {
-                Ok(boxed) => match boxed.downcast::<T>() {
-                    Ok(t) => Ok(Arc::new(*t)),
-                    Err(_) => Err(DependencyError::missing(std::any::type_name::<T>())),
-                },
-                Err(e) => Err(e),
-            }
-        } else {
-            visiting.remove(&type_id);
-            Err(DependencyError::missing(std::any::type_name::<T>()))
-        }
+            visiting.pop();
+            result
+        })
     }
 
     /// Register a dependency function along with its dependency chain info.
@@ -1043,7 +1407,7 @@ impl DependsResolver {
     /// ```
     pub fn register_with_deps<T, F, R>(
         &self,
-        _marker: std::marker::PhantomData<T>,
+        marker: std::marker::PhantomData<T>,
         func: F,
         depends_on: Vec<TypeId>,
     ) where
@@ -1051,8 +1415,23 @@ impl DependsResolver {
         F: Fn(AppState) -> R + Send + Sync + 'static,
         R: Future<Output = Result<T, DependencyError>> + Send + 'static,
     {
+        self.register_with_deps_and_cache(marker, func, depends_on, true);
+    }
+
+    /// Register a dependency function + dependency chain with explicit cache behavior.
+    pub fn register_with_deps_and_cache<T, F, R>(
+        &self,
+        _marker: std::marker::PhantomData<T>,
+        func: F,
+        depends_on: Vec<TypeId>,
+        use_cache: bool,
+    ) where
+        T: Send + Sync + 'static,
+        F: Fn(AppState) -> R + Send + Sync + 'static,
+        R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+    {
         // First register the function
-        self.register(std::marker::PhantomData::<T>, func);
+        self.register_with_cache(std::marker::PhantomData::<T>, func, use_cache);
 
         // Then register the dependency chain info
         let mut chains = self.dep_chains.write();
@@ -1073,6 +1452,32 @@ impl DependsResolver {
 // Re-export for convenience
 pub use std::future::Future;
 
+/// FastAPI-compatible HTTP exception detail payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum HttpExceptionDetail {
+    String(String),
+    Json(serde_json::Value),
+}
+
+impl From<String> for HttpExceptionDetail {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&str> for HttpExceptionDetail {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_string())
+    }
+}
+
+impl From<serde_json::Value> for HttpExceptionDetail {
+    fn from(value: serde_json::Value) -> Self {
+        Self::Json(value)
+    }
+}
+
 /// API Error type
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -1081,6 +1486,173 @@ pub struct ApiError {
     pub error: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub details: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub detail: Vec<ValidationErrorDetail>,
+    #[serde(skip_serializing)]
+    pub http_detail: Option<HttpExceptionDetail>,
+    #[serde(skip)]
+    pub headers: HeaderMap,
+}
+
+/// FastAPI-compatible validation location item (`str | int`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum ValidationLocItem {
+    Str(String),
+    Int(i64),
+}
+
+impl ValidationLocItem {
+    fn from_segment(segment: &str) -> Option<Self> {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            return None;
+        }
+
+        if let Ok(index) = segment.parse::<i64>() {
+            return Some(Self::Int(index));
+        }
+
+        Some(Self::Str(segment.to_string()))
+    }
+}
+
+/// FastAPI-compatible validation error item.
+///
+/// FastAPI returns validation failures as:
+/// `{ "detail": [{"loc": [...], "msg": "...", "type": "..."}] }`
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidationErrorDetail {
+    pub loc: Vec<ValidationLocItem>,
+    pub msg: String,
+    #[serde(rename = "type")]
+    pub error_type: String,
+}
+
+impl ValidationErrorDetail {
+    fn parse_field_loc(field: &str) -> Vec<ValidationLocItem> {
+        let mut parsed = Vec::new();
+        let mut current = String::new();
+        let chars: Vec<char> = field.trim().chars().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            match chars[i] {
+                '.' => {
+                    if let Some(item) = ValidationLocItem::from_segment(&current) {
+                        parsed.push(item);
+                    }
+                    current.clear();
+                    i += 1;
+                }
+                '[' => {
+                    if let Some(item) = ValidationLocItem::from_segment(&current) {
+                        parsed.push(item);
+                    }
+                    current.clear();
+                    i += 1;
+
+                    let mut bracket_content = String::new();
+                    while i < chars.len() && chars[i] != ']' {
+                        bracket_content.push(chars[i]);
+                        i += 1;
+                    }
+
+                    if let Some(item) = ValidationLocItem::from_segment(&bracket_content) {
+                        parsed.push(item);
+                    }
+
+                    if i < chars.len() && chars[i] == ']' {
+                        i += 1;
+                    }
+                }
+                c => {
+                    current.push(c);
+                    i += 1;
+                }
+            }
+        }
+
+        if let Some(item) = ValidationLocItem::from_segment(&current) {
+            parsed.push(item);
+        }
+
+        parsed
+    }
+
+    fn from_message(message: String) -> Self {
+        // Convert "field: message" style errors into FastAPI-like shape.
+        if let Some((field, msg)) = message.split_once(':') {
+            let mut loc = vec![ValidationLocItem::Str("body".to_string())];
+            loc.extend(Self::parse_field_loc(field));
+
+            return Self {
+                loc,
+                msg: msg.trim().to_string(),
+                error_type: "value_error".to_string(),
+            };
+        }
+
+        Self {
+            loc: vec![ValidationLocItem::Str("body".to_string())],
+            msg: message,
+            error_type: "value_error".to_string(),
+        }
+    }
+}
+
+/// FastAPI-like HTTP exception object (`HTTPException`).
+#[derive(Debug, Clone)]
+pub struct HttpException {
+    pub status: StatusCode,
+    pub detail: HttpExceptionDetail,
+    pub headers: HeaderMap,
+}
+
+/// FastAPI naming alias.
+pub type HTTPException = HttpException;
+
+impl HttpException {
+    pub fn new(status: StatusCode, detail: impl Into<HttpExceptionDetail>) -> Self {
+        Self {
+            status,
+            detail: detail.into(),
+            headers: HeaderMap::new(),
+        }
+    }
+
+    pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+        self.headers.insert(name, value);
+        self
+    }
+
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers.extend(headers);
+        self
+    }
+}
+
+impl From<HttpException> for ApiError {
+    fn from(value: HttpException) -> Self {
+        Self {
+            status: value.status,
+            error: value
+                .status
+                .canonical_reason()
+                .unwrap_or("HTTP error")
+                .to_string(),
+            details: vec![],
+            detail: vec![],
+            http_detail: Some(value.detail),
+            headers: value.headers,
+        }
+    }
+}
+
+impl IntoResponse for HttpException {
+    fn into_response(self) -> Response {
+        ApiError::from(self).into_response()
+    }
 }
 
 impl ApiError {
@@ -1089,6 +1661,9 @@ impl ApiError {
             status: StatusCode::UNAUTHORIZED,
             error: msg.into(),
             details: vec![],
+            detail: vec![],
+            http_detail: None,
+            headers: HeaderMap::new(),
         }
     }
 
@@ -1097,6 +1672,9 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             error: msg,
             details: vec![],
+            detail: vec![],
+            http_detail: None,
+            headers: HeaderMap::new(),
         }
     }
 
@@ -1105,6 +1683,9 @@ impl ApiError {
             status: StatusCode::FORBIDDEN,
             error: msg.into(),
             details: vec![],
+            detail: vec![],
+            http_detail: None,
+            headers: HeaderMap::new(),
         }
     }
 
@@ -1113,6 +1694,9 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             error: msg,
             details: vec![],
+            detail: vec![],
+            http_detail: None,
+            headers: HeaderMap::new(),
         }
     }
 
@@ -1121,23 +1705,86 @@ impl ApiError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             error: msg,
             details: vec![],
+            detail: vec![],
+            http_detail: None,
+            headers: HeaderMap::new(),
         }
     }
 
+    /// Create FastAPI-like HTTPException payload (`{"detail": ...}`).
+    pub fn http_exception(status: StatusCode, detail: impl Into<HttpExceptionDetail>) -> Self {
+        HttpException::new(status, detail).into()
+    }
+
+    /// Attach a response header to this error.
+    pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
+        self.headers.insert(name, value);
+        self
+    }
+
+    /// Attach multiple response headers to this error.
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers.extend(headers);
+        self
+    }
+
     pub fn validation_error(errors: Vec<String>) -> Self {
+        let detail = errors
+            .iter()
+            .cloned()
+            .map(ValidationErrorDetail::from_message)
+            .collect();
+
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             error: "Validation failed".into(),
             details: errors,
+            detail,
+            http_detail: None,
+            headers: HeaderMap::new(),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = serde_json::to_string(&self)
+        let ApiError {
+            status,
+            error,
+            details,
+            detail,
+            http_detail,
+            headers,
+        } = self;
+
+        let mut body = serde_json::Map::new();
+        body.insert("error".to_string(), serde_json::Value::String(error));
+
+        if !details.is_empty() {
+            body.insert(
+                "details".to_string(),
+                serde_json::to_value(details).unwrap_or_else(|_| serde_json::Value::Array(vec![])),
+            );
+        }
+
+        if !detail.is_empty() {
+            body.insert(
+                "detail".to_string(),
+                serde_json::to_value(detail).unwrap_or_else(|_| serde_json::Value::Array(vec![])),
+            );
+        } else if let Some(http_detail) = http_detail {
+            body.insert(
+                "detail".to_string(),
+                serde_json::to_value(http_detail).unwrap_or(serde_json::Value::Null),
+            );
+        }
+
+        let body = serde_json::to_string(&serde_json::Value::Object(body))
             .unwrap_or_else(|_| r#"{"error":"Internal server error"}"#.to_string());
-        (self.status, [("content-type", "application/json")], body).into_response()
+
+        let mut response = (status, [("content-type", "application/json")], body).into_response();
+        response.headers_mut().extend(headers);
+        response
     }
 }
 
@@ -1145,12 +1792,25 @@ impl IntoResponse for ApiError {
 /// Response model shaping options for FastAPI-like response_model control
 #[derive(Clone, Default)]
 pub struct ResponseModelOptions {
-    /// Fields to include in the response (takes precedence over exclude)
+    /// Fields to include in the response (takes precedence over exclude).
+    /// Supports nested selectors encoded as dotted paths (e.g. "user.profile.name", "items.*.id").
     pub include: Option<&'static [&'static str]>,
-    /// Fields to exclude from the response
+    /// Fields to exclude from the response.
+    /// Supports nested selectors encoded as dotted paths (e.g. "user.password", "items.*.secret").
     pub exclude: Option<&'static [&'static str]>,
     /// Whether to use alias names (from serde(rename)) for serialization
     pub by_alias: bool,
+    /// Exclude fields with null values in runtime JSON response (FastAPI parity option)
+    pub exclude_none: bool,
+    /// Exclude fields that were not explicitly set on the model payload.
+    ///
+    /// For `#[api_model]` responses, UltraAPI can consume explicit field-set
+    /// metadata (captured from request payloads) to keep FastAPI-like semantics:
+    /// explicitly provided `null` / empty values are retained while omitted fields
+    /// are removed.
+    pub exclude_unset: bool,
+    /// Exclude fields whose value matches declared defaults (`#[api_model]` metadata)
+    pub exclude_defaults: bool,
     /// Content-Type override for OpenAPI response
     pub content_type: Option<&'static str>,
 }
@@ -1170,6 +1830,8 @@ pub enum ResponseClass {
     Binary,
     /// Streaming response (application/octet-stream with chunked transfer)
     Stream,
+    /// Server-Sent Events response (text/event-stream)
+    Sse,
     /// XML response (application/xml)
     Xml,
     /// File response with optional filename and content-type (application/octet-stream default)
@@ -1187,6 +1849,7 @@ impl ResponseClass {
             ResponseClass::Text => "text/plain",
             ResponseClass::Binary => "application/octet-stream",
             ResponseClass::Stream => "application/octet-stream",
+            ResponseClass::Sse => "text/event-stream",
             ResponseClass::Xml => "application/xml",
             ResponseClass::File => "application/octet-stream",
             // OpenAPI 用の最小対応（redirect は通常 body を持たない）
@@ -1715,28 +2378,115 @@ impl ResponseModelOptions {
     /// Apply response model shaping to a serde_json::Value
     /// This method handles include/exclude filtering only (no alias conversion)
     pub fn apply(&self, value: serde_json::Value) -> serde_json::Value {
-        self.apply_with_aliases(value, None, false)
+        self.apply_with_aliases_and_field_set(value, None, false, None)
     }
 
-    /// Apply response model shaping with alias support
+    fn is_registered_api_model_type(type_name: &str) -> bool {
+        for info in inventory::iter::<ValidatorInfo> {
+            if info.type_name == type_name {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn should_keep_for_exclude_unset(path: &str, field_set: Option<&HashSet<String>>) -> bool {
+        if path.is_empty() {
+            return true;
+        }
+
+        let Some(field_set) = field_set else {
+            return true;
+        };
+
+        if field_set.contains(path) {
+            return true;
+        }
+
+        let prefix = format!("{}.", path);
+        field_set
+            .iter()
+            .any(|candidate| candidate.starts_with(&prefix))
+    }
+
+    /// Returns true when value should be filtered by exclude_defaults semantics.
     ///
-    /// Steps:
-    /// 1. If aliases provided, normalize keys from alias names to field names
-    /// 2. Apply include/exclude filtering using field names
-    /// 3. If by_alias=true, convert field names back to alias names for output
-    ///
-    /// # Arguments
-    /// * `value` - The JSON value to transform
-    /// * `type_name` - Optional type name to look up alias mappings
-    /// * `by_alias` - Whether to use alias names in output (true) or field names (false)
-    pub fn apply_with_aliases(
+    /// FastAPI parity: only remove fields whose value exactly matches declared
+    /// field defaults (from `#[api_model]` metadata). If default metadata is not
+    /// available, keep the value.
+    fn is_declared_default_value(
+        field_path: &str,
+        value: &serde_json::Value,
+        field_defaults: Option<&std::collections::HashMap<String, serde_json::Value>>,
+    ) -> bool {
+        field_defaults
+            .and_then(|defaults| defaults.get(field_path))
+            .map(|default_value| default_value == value)
+            .unwrap_or(false)
+    }
+
+    fn split_filter_path(path: &str) -> Vec<&str> {
+        path.split('.')
+            .filter(|segment| !segment.is_empty())
+            .collect()
+    }
+
+    fn path_matches_exact(pattern: &str, path: &str) -> bool {
+        let pattern_segments = Self::split_filter_path(pattern);
+        let path_segments = Self::split_filter_path(path);
+
+        if pattern_segments.len() != path_segments.len() {
+            return false;
+        }
+
+        pattern_segments
+            .iter()
+            .zip(path_segments.iter())
+            .all(|(pat, current)| *pat == "*" || *pat == *current)
+    }
+
+    fn paths_overlap(pattern: &str, path: &str) -> bool {
+        let pattern_segments = Self::split_filter_path(pattern);
+        let path_segments = Self::split_filter_path(path);
+
+        if pattern_segments.is_empty() || path_segments.is_empty() {
+            return true;
+        }
+
+        let shared_len = pattern_segments.len().min(path_segments.len());
+
+        pattern_segments
+            .iter()
+            .take(shared_len)
+            .zip(path_segments.iter().take(shared_len))
+            .all(|(pat, current)| *pat == "*" || *pat == *current)
+    }
+
+    fn should_include_path(&self, path: &str) -> bool {
+        match (&self.include, &self.exclude) {
+            (Some(include_list), _) => include_list
+                .iter()
+                .any(|pattern| Self::paths_overlap(pattern, path)),
+            (None, Some(exclude_list)) => !exclude_list
+                .iter()
+                .any(|pattern| Self::path_matches_exact(pattern, path)),
+            (None, None) => true,
+        }
+    }
+
+    fn apply_with_aliases_at_path(
         &self,
         value: serde_json::Value,
         type_name: Option<&str>,
         by_alias: bool,
+        current_path: &str,
+        field_set: Option<&HashSet<String>>,
     ) -> serde_json::Value {
         // Get alias mapping if type_name provided
         let aliases = type_name.and_then(get_field_aliases);
+        // Get per-field default values if type_name provided
+        let field_defaults = type_name.and_then(get_field_defaults);
 
         // Build reverse mapping (alias -> field_name)
         let reverse_aliases: std::collections::HashMap<String, String> = aliases
@@ -1763,21 +2513,46 @@ impl ResponseModelOptions {
                         key.clone()
                     };
 
-                    // Step 2: Apply include/exclude using field names
-                    let should_include = match (&self.include, &self.exclude) {
-                        // If include is specified, only include those fields
-                        (Some(include_list), _) => include_list.contains(&field_name.as_str()),
-                        // If only exclude is specified, exclude listed fields
-                        (None, Some(exclude_list)) => !exclude_list.contains(&field_name.as_str()),
-                        // No filtering
-                        (None, None) => true,
+                    let field_path = if current_path.is_empty() {
+                        field_name.clone()
+                    } else {
+                        format!("{}.{}", current_path, field_name)
                     };
 
-                    if should_include {
-                        // Recursively apply to nested objects
-                        let transformed_val = self.apply_with_aliases(val, type_name, by_alias);
+                    // Step 2: Apply include/exclude using field names and nested paths
+                    if self.should_include_path(&field_path) {
+                        if self.exclude_unset
+                            && !Self::should_keep_for_exclude_unset(&field_path, field_set)
+                        {
+                            continue;
+                        }
 
-                        // Step 3: Convert output key based on by_alias setting
+                        // Recursively apply to nested objects
+                        let transformed_val = self.apply_with_aliases_at_path(
+                            val,
+                            type_name,
+                            by_alias,
+                            &field_path,
+                            field_set,
+                        );
+
+                        // exclude_none=true: skip null values (FastAPI parity behavior)
+                        if self.exclude_none && transformed_val.is_null() {
+                            continue;
+                        }
+
+                        // exclude_defaults=true: drop values equal to declared field defaults.
+                        if self.exclude_defaults
+                            && Self::is_declared_default_value(
+                                &field_path,
+                                &transformed_val,
+                                field_defaults.as_ref(),
+                            )
+                        {
+                            continue;
+                        }
+
+                        // Step 4: Convert output key based on by_alias setting
                         let output_key = if by_alias && has_aliases {
                             // Convert field name back to alias for output
                             aliases
@@ -1795,16 +2570,113 @@ impl ResponseModelOptions {
 
                 serde_json::Value::Object(result)
             }
-            // For arrays, apply to each element
+            // For arrays, apply to each element.
+            // Use numeric indices in nested paths so FastAPI-style selectors like
+            // items.{0: {...}} can target specific elements, while wildcard selectors
+            // (items.*.field) continue to work via path matching.
             serde_json::Value::Array(arr) => serde_json::Value::Array(
                 arr.into_iter()
-                    .map(|v| self.apply_with_aliases(v, type_name, by_alias))
+                    .enumerate()
+                    .map(|(idx, v)| {
+                        let item_path = if current_path.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{}.{}", current_path, idx)
+                        };
+                        self.apply_with_aliases_at_path(
+                            v, type_name, by_alias, &item_path, field_set,
+                        )
+                    })
                     .collect(),
             ),
             // Other values pass through unchanged
             other => other,
         }
     }
+
+    /// Apply response model shaping with alias support
+    ///
+    /// Steps:
+    /// 1. If aliases provided, normalize keys from alias names to field names
+    /// 2. Apply include/exclude filtering using field names (supports nested paths)
+    /// 3. Apply exclude_none / exclude_unset / exclude_defaults runtime filtering
+    /// 4. If by_alias=true, convert field names back to alias names for output
+    ///
+    /// # Arguments
+    /// * `value` - The JSON value to transform
+    /// * `type_name` - Optional type name to look up alias mappings
+    /// * `by_alias` - Whether to use alias names in output (true) or field names (false)
+    pub fn apply_with_aliases(
+        &self,
+        value: serde_json::Value,
+        type_name: Option<&str>,
+        by_alias: bool,
+    ) -> serde_json::Value {
+        self.apply_with_aliases_and_field_set(value, type_name, by_alias, None)
+    }
+
+    /// Apply response model shaping with explicit field-set metadata.
+    ///
+    /// `field_set` should contain dotted field paths that were explicitly provided
+    /// by the caller (e.g. parsed request payload paths). When `exclude_unset=true`
+    /// and the response type is an `#[api_model]`, only paths present in this set
+    /// are kept; explicitly provided `null` / empty values are preserved.
+    pub fn apply_with_aliases_and_field_set(
+        &self,
+        value: serde_json::Value,
+        type_name: Option<&str>,
+        by_alias: bool,
+        field_set: Option<&HashSet<String>>,
+    ) -> serde_json::Value {
+        let usable_field_set = if self.exclude_unset {
+            type_name
+                .filter(|name| Self::is_registered_api_model_type(name))
+                .and(field_set)
+        } else {
+            None
+        };
+
+        self.apply_with_aliases_at_path(value, type_name, by_alias, "", usable_field_set)
+    }
+}
+
+/// Collect dotted field paths that are explicitly present in a JSON payload.
+///
+/// Examples:
+/// - `{ "profile": { "name": "a" } }` -> `profile`, `profile.name`
+/// - `{ "items": [{"id": 1}] }` -> `items`, `items.0`, `items.0.id`
+pub fn collect_present_field_paths(value: &serde_json::Value) -> HashSet<String> {
+    fn walk(value: &serde_json::Value, current: &str, out: &mut HashSet<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, child) in map {
+                    let child_path = if current.is_empty() {
+                        key.to_string()
+                    } else {
+                        format!("{}.{}", current, key)
+                    };
+                    out.insert(child_path.clone());
+                    walk(child, &child_path, out);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for (idx, child) in items.iter().enumerate() {
+                    let child_path = if current.is_empty() {
+                        idx.to_string()
+                    } else {
+                        format!("{}.{}", current, idx)
+                    };
+                    out.insert(child_path.clone());
+                    walk(child, &child_path, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut paths = HashSet::new();
+    walk(value, "", &mut paths);
+    paths
 }
 
 pub struct RouteInfo {
@@ -1827,7 +2699,12 @@ pub struct RouteInfo {
     pub description: &'static str,
     pub tags: &'static [&'static str],
     pub security: &'static [&'static str],
+    /// Route-level dependencies declared via `#[dependencies(...)]`.
+    pub dependencies: &'static [&'static str],
+    /// Dynamic OpenAPI parameters (query/header/cookie) generated from extractors.
     pub query_params_fn: Option<fn() -> Vec<openapi::DynParameter>>,
+    /// True when route has query parameter extractors (used for 422 generation).
+    pub has_query_params: bool,
     /// Response model shaping options (include/exclude/by_alias)
     pub response_model_options: ResponseModelOptions,
     /// Response class for content-type (json, html, text, binary, stream, xml)
@@ -1865,6 +2742,8 @@ inventory::collect!(CallbackInfo);
 struct ProtectedRoute {
     method: String,
     path_pattern: String,
+    allowed_security_schemes: Vec<String>,
+    required_scopes_by_scheme: HashMap<String, Vec<String>>,
 }
 
 fn is_path_param_segment(segment: &str) -> bool {
@@ -1905,6 +2784,23 @@ fn route_method_matches(route_method: &str, request_method: &Method) -> bool {
     request_method == Method::HEAD && route_method.eq_ignore_ascii_case(Method::GET.as_str())
 }
 
+fn normalize_doc_path(path: &str) -> String {
+    let trimmed = path.trim();
+    let mut normalized = if trimmed.is_empty() {
+        "/".to_string()
+    } else if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{}", trimmed)
+    };
+
+    if normalized.len() > 1 {
+        normalized = normalized.trim_end_matches('/').to_string();
+    }
+
+    normalized
+}
+
 /// Schema information collected by api_model attribute
 pub struct SchemaInfo {
     pub name: &'static str,
@@ -1927,11 +2823,35 @@ pub struct FieldAliasInfo {
 
 inventory::collect!(FieldAliasInfo);
 
+/// Field default mapping: field_name -> serialized default value
+///
+/// Used by response_model(exclude_defaults=true) to match FastAPI-style
+/// field-default comparison semantics for `#[api_model]` types.
+pub struct FieldDefaultInfo {
+    pub type_name: &'static str,
+    /// Function that returns the field default mapping for this type
+    pub get_defaults: fn() -> &'static std::collections::HashMap<String, serde_json::Value>,
+}
+
+inventory::collect!(FieldDefaultInfo);
+
 /// Helper to get alias mapping for a type by name
 pub fn get_field_aliases(type_name: &str) -> Option<std::collections::HashMap<String, String>> {
     for info in inventory::iter::<FieldAliasInfo> {
         if info.type_name == type_name {
             return Some((info.get_aliases)().clone());
+        }
+    }
+    None
+}
+
+/// Helper to get field default mapping for a type by name
+pub fn get_field_defaults(
+    type_name: &str,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+    for info in inventory::iter::<FieldDefaultInfo> {
+        if info.type_name == type_name {
+            return Some((info.get_defaults)().clone());
         }
     }
     None
@@ -1943,6 +2863,8 @@ pub struct ResolvedRoute {
     pub prefix: String,
     pub extra_tags: Vec<String>,
     pub extra_security: Vec<String>,
+    pub extra_responses: HashMap<String, openapi::ResponseDef>,
+    pub include_in_schema: bool,
 }
 
 impl ResolvedRoute {
@@ -1984,15 +2906,13 @@ impl ResolvedRoute {
         tags
     }
 
-    /// Merged security: router-level + route-level
-    pub fn merged_security(&self) -> Vec<&str> {
-        let mut sec: Vec<&str> = self.extra_security.iter().map(|s| s.as_str()).collect();
-        for s in self.route_info.security {
-            if !sec.contains(s) {
-                sec.push(s);
-            }
-        }
-        sec
+    /// Merged security requirements with FastAPI-style semantics.
+    ///
+    /// - Router-level and route-level requirements are combined with logical AND.
+    /// - Multiple requirements at the same level are treated as logical OR.
+    pub fn merged_security(&self) -> Vec<HashMap<String, Vec<String>>> {
+        let parent: Vec<&str> = self.extra_security.iter().map(|s| s.as_str()).collect();
+        UltraApiApp::merge_security_requirements(&parent, self.route_info.security)
     }
 }
 
@@ -2002,6 +2922,8 @@ pub struct UltraApiRouter {
     routes: Vec<&'static RouteInfo>,
     tags: Vec<String>,
     security: Vec<String>,
+    responses: HashMap<String, openapi::ResponseDef>,
+    include_in_schema: bool,
     deps: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     children: Vec<UltraApiRouter>,
 }
@@ -2013,6 +2935,8 @@ impl UltraApiRouter {
             routes: Vec::new(),
             tags: Vec::new(),
             security: Vec::new(),
+            responses: HashMap::new(),
+            include_in_schema: true,
             deps: HashMap::new(),
             children: Vec::new(),
         }
@@ -2033,6 +2957,41 @@ impl UltraApiRouter {
         self
     }
 
+    /// Add a router-level OpenAPI response definition.
+    ///
+    /// This mirrors FastAPI's `include_router(..., responses={...})` behavior.
+    /// These responses are merged into each included route's OpenAPI operation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ultraapi::openapi::ResponseDef;
+    /// use ultraapi::UltraApiRouter;
+    ///
+    /// let router = UltraApiRouter::new("/api")
+    ///     .response(
+    ///         "401",
+    ///         ResponseDef {
+    ///             description: "Unauthorized".to_string(),
+    ///             schema_ref: None,
+    ///             content_type: None,
+    ///             headers: std::collections::HashMap::new(),
+    ///         },
+    ///     );
+    /// ```
+    pub fn response(mut self, status_code: &str, response: openapi::ResponseDef) -> Self {
+        self.responses.insert(status_code.to_string(), response);
+        self
+    }
+
+    /// Control whether included routes appear in OpenAPI schema.
+    ///
+    /// This mirrors FastAPI's `include_router(..., include_in_schema=...)`.
+    pub fn include_in_schema(mut self, include_in_schema: bool) -> Self {
+        self.include_in_schema = include_in_schema;
+        self
+    }
+
     pub fn dep<T: 'static + Send + Sync>(mut self, dep: T) -> Self {
         self.deps.insert(TypeId::of::<T>(), Arc::new(dep));
         self
@@ -2043,12 +3002,34 @@ impl UltraApiRouter {
         self
     }
 
-    /// Flatten this router tree into resolved routes, accumulating prefix/tags/security
+    /// Flatten this router tree into resolved routes, accumulating prefix/tags/security.
+    ///
+    /// This public API keeps backward compatibility and assumes default router options
+    /// (no inherited extra responses, include_in_schema=true).
     pub fn resolve(
         &self,
         parent_prefix: &str,
         parent_tags: &[String],
         parent_security: &[String],
+    ) -> Vec<ResolvedRoute> {
+        self.resolve_with_options(
+            parent_prefix,
+            parent_tags,
+            parent_security,
+            &HashMap::new(),
+            true,
+        )
+    }
+
+    /// Internal resolver used by app/runtime/OpenAPI generation to propagate
+    /// router-level options through nesting.
+    fn resolve_with_options(
+        &self,
+        parent_prefix: &str,
+        parent_tags: &[String],
+        parent_security: &[String],
+        parent_responses: &HashMap<String, openapi::ResponseDef>,
+        parent_include_in_schema: bool,
     ) -> Vec<ResolvedRoute> {
         // Use the same join logic as ResolvedRoute::full_path for consistency
         let full_prefix = ResolvedRoute::join_paths(parent_prefix, &self.prefix);
@@ -2065,6 +3046,13 @@ impl UltraApiRouter {
             }
         }
 
+        let mut merged_responses = parent_responses.clone();
+        for (status, response) in &self.responses {
+            merged_responses.insert(status.clone(), response.clone());
+        }
+
+        let merged_include_in_schema = parent_include_in_schema && self.include_in_schema;
+
         let mut resolved = Vec::new();
         for route in &self.routes {
             resolved.push(ResolvedRoute {
@@ -2072,10 +3060,18 @@ impl UltraApiRouter {
                 prefix: full_prefix.clone(),
                 extra_tags: merged_tags.clone(),
                 extra_security: merged_security.clone(),
+                extra_responses: merged_responses.clone(),
+                include_in_schema: merged_include_in_schema,
             });
         }
         for child in &self.children {
-            resolved.extend(child.resolve(&full_prefix, &merged_tags, &merged_security));
+            resolved.extend(child.resolve_with_options(
+                &full_prefix,
+                &merged_tags,
+                &merged_security,
+                &merged_responses,
+                merged_include_in_schema,
+            ));
         }
         resolved
     }
@@ -2102,6 +3098,8 @@ pub enum SwaggerMode {
 /// The main application struct
 pub struct UltraApiApp {
     deps: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    /// Per-request dependency factories (fresh instance on each extraction)
+    request_dep_factories: HashMap<TypeId, RequestDepFactory>,
     /// Dependency overrides for testing - these take precedence over regular deps
     dep_overrides: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     /// Resolver for Depends function-based dependencies
@@ -2112,6 +3110,9 @@ pub struct UltraApiApp {
     contact: Option<openapi::Contact>,
     license: Option<openapi::License>,
     swagger_mode: SwaggerMode,
+    docs_url: String,
+    redoc_url: String,
+    openapi_url: String,
     servers: Vec<openapi::Server>,
     security_schemes: HashMap<String, openapi::SecurityScheme>,
     routers: Vec<UltraApiRouter>,
@@ -2149,6 +3150,7 @@ impl UltraApiApp {
     pub fn new() -> Self {
         Self {
             deps: HashMap::new(),
+            request_dep_factories: HashMap::new(),
             dep_overrides: HashMap::new(),
             depends_resolver: None,
             title: env!("CARGO_PKG_NAME").to_string(),
@@ -2157,6 +3159,9 @@ impl UltraApiApp {
             contact: None,
             license: None,
             swagger_mode: SwaggerMode::Embedded,
+            docs_url: "/docs".to_string(),
+            redoc_url: "/redoc".to_string(),
+            openapi_url: "/openapi.json".to_string(),
             servers: Vec::new(),
             security_schemes: HashMap::new(),
             routers: Vec::new(),
@@ -2215,8 +3220,66 @@ impl UltraApiApp {
         self
     }
 
+    /// Customize the docs UI endpoint path (default: `/docs`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ultraapi::prelude::*;
+    ///
+    /// let app = UltraApiApp::new().docs_url("/api/docs");
+    /// ```
+    pub fn docs_url(mut self, path: &str) -> Self {
+        self.docs_url = normalize_doc_path(path);
+        self
+    }
+
+    /// Customize the ReDoc endpoint path (default: `/redoc`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ultraapi::prelude::*;
+    ///
+    /// let app = UltraApiApp::new().redoc_url("/api/redoc");
+    /// ```
+    pub fn redoc_url(mut self, path: &str) -> Self {
+        self.redoc_url = normalize_doc_path(path);
+        self
+    }
+
+    /// Customize the OpenAPI JSON endpoint path (default: `/openapi.json`).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use ultraapi::prelude::*;
+    ///
+    /// let app = UltraApiApp::new().openapi_url("/api/openapi.json");
+    /// ```
+    pub fn openapi_url(mut self, path: &str) -> Self {
+        self.openapi_url = normalize_doc_path(path);
+        self
+    }
+
     pub fn dep<T: 'static + Send + Sync>(mut self, dep: T) -> Self {
         self.deps.insert(TypeId::of::<T>(), Arc::new(dep));
+        self
+    }
+
+    /// Register a dependency factory that runs on each extraction.
+    ///
+    /// This provides request-scoped dependency behavior for `Dep<T>`.
+    pub fn request_dep<T, F>(mut self, factory: F) -> Self
+    where
+        T: 'static + Send + Sync,
+        F: Fn(&AppState) -> T + Send + Sync + 'static,
+    {
+        let wrapped: RequestDepFactory = Arc::new(move |state: &AppState| {
+            Arc::new(factory(state)) as Arc<dyn Any + Send + Sync>
+        });
+        self.request_dep_factories
+            .insert(TypeId::of::<T>(), wrapped);
         self
     }
 
@@ -2283,11 +3346,10 @@ impl UltraApiApp {
     ///     .depends(get_db_pool)
     ///     .depends(get_user_service);
     /// ```
-    pub fn depends<T, F, R>(mut self, func: F) -> Self
+    pub fn depends<T, F, Sig>(mut self, func: F) -> Self
     where
         T: Send + Sync + 'static,
-        F: Fn(AppState) -> R + Send + Sync + 'static,
-        R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+        F: CallableDependency<T, Sig>,
     {
         // Create resolver if not exists
         if self.depends_resolver.is_none() {
@@ -2296,7 +3358,54 @@ impl UltraApiApp {
 
         if let Some(ref resolver) = self.depends_resolver {
             let resolver = Arc::clone(resolver);
-            resolver.register(std::marker::PhantomData::<T>, func);
+            let mut depends_on = F::declared_dependencies();
+            depends_on.sort_by_key(|id| format!("{:?}", id));
+            depends_on.dedup();
+
+            let func = Arc::new(func);
+            resolver.register_with_deps(
+                std::marker::PhantomData::<T>,
+                move |state: AppState| {
+                    let func = Arc::clone(&func);
+                    async move { func.call(state).await }
+                },
+                depends_on,
+            );
+        }
+
+        self
+    }
+
+    /// Register a function-based dependency with `use_cache=false` semantics.
+    ///
+    /// This mirrors FastAPI `Depends(..., use_cache=False)` at the dependency level:
+    /// each extraction in the same request re-evaluates the dependency function.
+    pub fn depends_no_cache<T, F, Sig>(mut self, func: F) -> Self
+    where
+        T: Send + Sync + 'static,
+        F: CallableDependency<T, Sig>,
+    {
+        // Create resolver if not exists
+        if self.depends_resolver.is_none() {
+            self.depends_resolver = Some(Arc::new(DependsResolver::new()));
+        }
+
+        if let Some(ref resolver) = self.depends_resolver {
+            let resolver = Arc::clone(resolver);
+            let mut depends_on = F::declared_dependencies();
+            depends_on.sort_by_key(|id| format!("{:?}", id));
+            depends_on.dedup();
+
+            let func = Arc::new(func);
+            resolver.register_with_deps_and_cache(
+                std::marker::PhantomData::<T>,
+                move |state: AppState| {
+                    let func = Arc::clone(&func);
+                    async move { func.call(state).await }
+                },
+                depends_on,
+                false,
+            );
         }
 
         self
@@ -2330,11 +3439,10 @@ impl UltraApiApp {
     ///     .dep(DbPool { connection_string: "postgres://localhost".into() })
     ///     .depends_with_deps(get_user_repo, vec![TypeId::of::<DbPool>()]);
     /// ```
-    pub fn depends_with_deps<T, F, R>(mut self, func: F, depends_on: Vec<TypeId>) -> Self
+    pub fn depends_with_deps<T, F, Sig>(mut self, func: F, mut depends_on: Vec<TypeId>) -> Self
     where
         T: Send + Sync + 'static,
-        F: Fn(AppState) -> R + Send + Sync + 'static,
-        R: Future<Output = Result<T, DependencyError>> + Send + 'static,
+        F: CallableDependency<T, Sig>,
     {
         // Create resolver if not exists
         if self.depends_resolver.is_none() {
@@ -2343,7 +3451,55 @@ impl UltraApiApp {
 
         if let Some(ref resolver) = self.depends_resolver {
             let resolver = Arc::clone(resolver);
-            resolver.register_with_deps(std::marker::PhantomData::<T>, func, depends_on);
+            depends_on.extend(F::declared_dependencies());
+            depends_on.sort_by_key(|id| format!("{:?}", id));
+            depends_on.dedup();
+
+            let func = Arc::new(func);
+            resolver.register_with_deps(
+                std::marker::PhantomData::<T>,
+                move |state: AppState| {
+                    let func = Arc::clone(&func);
+                    async move { func.call(state).await }
+                },
+                depends_on,
+            );
+        }
+
+        self
+    }
+
+    /// Register a callable dependency with declared dependencies and `use_cache=false`.
+    pub fn depends_with_deps_no_cache<T, F, Sig>(
+        mut self,
+        func: F,
+        mut depends_on: Vec<TypeId>,
+    ) -> Self
+    where
+        T: Send + Sync + 'static,
+        F: CallableDependency<T, Sig>,
+    {
+        // Create resolver if not exists
+        if self.depends_resolver.is_none() {
+            self.depends_resolver = Some(Arc::new(DependsResolver::new()));
+        }
+
+        if let Some(ref resolver) = self.depends_resolver {
+            let resolver = Arc::clone(resolver);
+            depends_on.extend(F::declared_dependencies());
+            depends_on.sort_by_key(|id| format!("{:?}", id));
+            depends_on.dedup();
+
+            let func = Arc::new(func);
+            resolver.register_with_deps_and_cache(
+                std::marker::PhantomData::<T>,
+                move |state: AppState| {
+                    let func = Arc::clone(&func);
+                    async move { func.call(state).await }
+                },
+                depends_on,
+                false,
+            );
         }
 
         self
@@ -2437,8 +3593,8 @@ impl UltraApiApp {
     /// ```
     pub fn webhook(mut self, name: &str, route: &'static RouteInfo) -> Self {
         let tags: Vec<String> = route.tags.iter().map(|s| s.to_string()).collect();
-        let sec: Vec<&str> = route.security.to_vec();
-        let operation = Self::build_operation(route, tags, &sec);
+        let sec = Self::parse_security_requirements(route.security);
+        let operation = Self::build_operation(route, tags, &sec, &HashMap::new(), &HashSet::new());
         let mut path_item = openapi::PathItem::new();
         path_item.insert(route.method.to_lowercase(), operation);
         self.webhooks.insert(name.to_string(), path_item);
@@ -2803,7 +3959,8 @@ impl UltraApiApp {
     /// Mount a sub-application at the given path.
     ///
     /// This is similar to FastAPI's sub-applications. The sub-app will have its own
-    /// `/docs` and `/openapi.json` endpoints available at `/<path>/docs` and `/<path>/openapi.json`.
+    /// docs/OpenAPI endpoints under the mount prefix, honoring the sub-app's
+    /// `docs_url`, `redoc_url`, and `openapi_url` settings.
     ///
     /// Note: The sub-app's routes will NOT be included in the main app's OpenAPI spec.
     /// The sub-app's deps will be merged into the main app's dependency injection container.
@@ -2821,6 +3978,12 @@ impl UltraApiApp {
     /// // Mount it at /api
     /// let app = UltraApiApp::new()
     ///     .mount("/api", sub_app);
+    ///
+    /// // Customize docs/OpenAPI URLs
+    /// let custom = UltraApiApp::new()
+    ///     .docs_url("/api/docs")
+    ///     .redoc_url("/api/redoc")
+    ///     .openapi_url("/api/openapi.json");
     /// ```
     pub fn mount(mut self, path: &str, mut sub_app: UltraApiApp) -> Self {
         // Merge sub-app's deps into main app
@@ -3096,6 +4259,156 @@ impl UltraApiApp {
         self
     }
 
+    fn collect_protected_routes(
+        has_explicit: bool,
+        resolved: &[ResolvedRoute],
+    ) -> Vec<ProtectedRoute> {
+        let mut protected_routes = Vec::new();
+
+        let parse_route_security =
+            |requirements: &[HashMap<String, Vec<String>>]| -> (Vec<String>, HashMap<String, Vec<String>>) {
+                let mut allowed_security_schemes = Vec::new();
+                let mut required_scopes_by_scheme: HashMap<String, Vec<String>> = HashMap::new();
+
+                for requirement in requirements {
+                    for (scheme, scopes) in requirement {
+                        if !allowed_security_schemes.contains(scheme) {
+                            allowed_security_schemes.push(scheme.clone());
+                        }
+
+                        if !scopes.is_empty() {
+                            let entry = required_scopes_by_scheme.entry(scheme.clone()).or_default();
+                            for scope in scopes {
+                                if !entry.contains(scope) {
+                                    entry.push(scope.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                (allowed_security_schemes, required_scopes_by_scheme)
+            };
+
+        // Collect protected routes from explicit routers (includes merged router-level security)
+        if has_explicit {
+            for r in resolved {
+                let merged_security = r.merged_security();
+                let (allowed_security_schemes, required_scopes_by_scheme) =
+                    parse_route_security(&merged_security);
+
+                if !allowed_security_schemes.is_empty() {
+                    protected_routes.push(ProtectedRoute {
+                        method: r.route_info.method.to_string(),
+                        path_pattern: r.full_axum_path(),
+                        allowed_security_schemes,
+                        required_scopes_by_scheme,
+                    });
+                }
+            }
+        } else {
+            // Collect from inventory
+            for route in inventory::iter::<&RouteInfo> {
+                let parsed_security = Self::parse_security_requirements(route.security);
+                let (allowed_security_schemes, required_scopes_by_scheme) =
+                    parse_route_security(&parsed_security);
+
+                if !allowed_security_schemes.is_empty() {
+                    protected_routes.push(ProtectedRoute {
+                        method: route.method.to_string(),
+                        path_pattern: route.axum_path.to_string(),
+                        allowed_security_schemes,
+                        required_scopes_by_scheme,
+                    });
+                }
+            }
+        }
+
+        protected_routes
+    }
+
+    fn inferred_runtime_security_schemes(&self) -> Vec<middleware::SecuritySchemeConfig> {
+        self.security_schemes
+            .iter()
+            .filter_map(|(scheme_name, scheme)| match scheme {
+                openapi::SecurityScheme::Bearer { .. } => Some(
+                    middleware::SecuritySchemeConfig::bearer(scheme_name.clone()),
+                ),
+                openapi::SecurityScheme::Basic { .. } => {
+                    Some(middleware::SecuritySchemeConfig::basic(scheme_name.clone()))
+                }
+                openapi::SecurityScheme::ApiKey { name, location } => {
+                    let location = location.to_ascii_lowercase();
+                    match location.as_str() {
+                        "query" => Some(middleware::SecuritySchemeConfig::api_key_query(
+                            scheme_name.clone(),
+                            name.clone(),
+                        )),
+                        "cookie" => Some(middleware::SecuritySchemeConfig::api_key_cookie(
+                            scheme_name.clone(),
+                            name.clone(),
+                        )),
+                        _ => Some(middleware::SecuritySchemeConfig::api_key_header(
+                            scheme_name.clone(),
+                            name.clone(),
+                        )),
+                    }
+                }
+                openapi::SecurityScheme::OAuth2(_)
+                | openapi::SecurityScheme::OpenIdConnect { .. } => Some(
+                    middleware::SecuritySchemeConfig::bearer(scheme_name.clone()),
+                ),
+                openapi::SecurityScheme::Raw(def) => {
+                    let scheme_type = def.scheme_type.to_ascii_lowercase();
+                    match scheme_type.as_str() {
+                        "http" => {
+                            if def
+                                .scheme
+                                .as_deref()
+                                .is_some_and(|s| s.eq_ignore_ascii_case("basic"))
+                            {
+                                Some(middleware::SecuritySchemeConfig::basic(scheme_name.clone()))
+                            } else {
+                                Some(middleware::SecuritySchemeConfig::bearer(
+                                    scheme_name.clone(),
+                                ))
+                            }
+                        }
+                        "apikey" => {
+                            let key_name = def
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| "authorization".to_string());
+                            let location = def
+                                .location
+                                .clone()
+                                .unwrap_or_else(|| "header".to_string())
+                                .to_ascii_lowercase();
+                            match location.as_str() {
+                                "query" => Some(middleware::SecuritySchemeConfig::api_key_query(
+                                    scheme_name.clone(),
+                                    key_name,
+                                )),
+                                "cookie" => Some(middleware::SecuritySchemeConfig::api_key_cookie(
+                                    scheme_name.clone(),
+                                    key_name,
+                                )),
+                                _ => Some(middleware::SecuritySchemeConfig::api_key_header(
+                                    scheme_name.clone(),
+                                    key_name,
+                                )),
+                            }
+                        }
+                        "oauth2" | "openidconnect" => Some(
+                            middleware::SecuritySchemeConfig::bearer(scheme_name.clone()),
+                        ),
+                        _ => None,
+                    }
+                }
+            })
+            .collect()
+    }
+
     /// Check if routers were explicitly included
     pub fn has_explicit_routes(&self) -> bool {
         !self.routers.is_empty()
@@ -3104,8 +4417,9 @@ impl UltraApiApp {
     /// Resolve all routes from included routers
     pub fn resolve_routes(&self) -> Vec<ResolvedRoute> {
         let mut resolved = Vec::new();
+        let root_responses: HashMap<String, openapi::ResponseDef> = HashMap::new();
         for router in &self.routers {
-            resolved.extend(router.resolve("", &[], &[]));
+            resolved.extend(router.resolve_with_options("", &[], &[], &root_responses, true));
         }
         resolved
     }
@@ -3147,8 +4461,11 @@ impl UltraApiApp {
     /// ```
     pub fn into_router_with_lifespan(mut self) -> (Router, lifespan::LifespanRunner) {
         let spec = self.generate_openapi_spec();
-        let swagger_html = self.generate_swagger_html();
-        let redoc_html = self.generate_redoc_html("/openapi.json");
+        let openapi_url = self.openapi_url.clone();
+        let docs_url = self.docs_url.clone();
+        let redoc_url = self.redoc_url.clone();
+        let swagger_html = self.generate_swagger_html(&openapi_url);
+        let redoc_html = self.generate_redoc_html(&openapi_url);
         let has_explicit = self.has_explicit_routes();
         let resolved = if has_explicit {
             self.resolve_routes()
@@ -3158,6 +4475,7 @@ impl UltraApiApp {
         let spec_json =
             serde_json::to_string_pretty(&spec.to_json_with_query_params(&self.routers))
                 .expect("Failed to serialize OpenAPI spec");
+        let inferred_runtime_security_schemes = self.inferred_runtime_security_schemes();
 
         // Merge deps from routers
         let mut all_deps = self.deps;
@@ -3181,6 +4499,7 @@ impl UltraApiApp {
 
         let state = AppState {
             deps: Arc::new(all_deps),
+            request_dep_factories: Arc::new(self.request_dep_factories),
             depends_resolver,
         };
 
@@ -3200,7 +4519,7 @@ impl UltraApiApp {
 
         let spec_json_clone = spec_json.clone();
         app = app.route(
-            "/openapi.json",
+            &openapi_url,
             axum::routing::get(move || {
                 let spec = spec_json_clone.clone();
                 async move { (StatusCode::OK, [("content-type", "application/json")], spec) }
@@ -3208,7 +4527,7 @@ impl UltraApiApp {
         );
 
         app = app.route(
-            "/docs",
+            &docs_url,
             axum::routing::get(move || {
                 let html = swagger_html.clone();
                 async move { (StatusCode::OK, [("content-type", "text/html")], html) }
@@ -3216,7 +4535,7 @@ impl UltraApiApp {
         );
 
         app = app.route(
-            "/redoc",
+            &redoc_url,
             axum::routing::get(move || {
                 let html = redoc_html.clone();
                 async move { (StatusCode::OK, [("content-type", "text/html")], html) }
@@ -3237,35 +4556,28 @@ impl UltraApiApp {
             app = app.layer(cors_config.clone().build());
         }
 
+        let protected = Arc::new(Self::collect_protected_routes(has_explicit, &resolved));
+
+        // If there are protected routes and auth isn't configured explicitly,
+        // infer a reasonable default from declared OpenAPI security schemes.
+        let should_auto_enable_auth = !self.middleware.auth_enabled
+            && !protected.is_empty()
+            && matches!(
+                self.middleware.auth_default_policy,
+                middleware::AuthDefaultPolicy::SecureByDefault
+            );
+        if should_auto_enable_auth {
+            let mut auth_layer = middleware::AuthLayer::with_mock();
+            if !inferred_runtime_security_schemes.is_empty() {
+                auth_layer = auth_layer.with_security_schemes(inferred_runtime_security_schemes);
+            }
+            self.middleware.auth_enabled = true;
+            self.middleware.auth_layer = Some(auth_layer);
+        }
+
         // Apply auth middleware if enabled
         if self.middleware.auth_enabled {
             if let Some(auth_layer) = self.middleware.auth_layer.clone() {
-                let mut protected_routes: Vec<ProtectedRoute> = Vec::new();
-
-                // Collect protected routes from explicit routers (includes merged router-level security)
-                if has_explicit {
-                    for r in &resolved {
-                        if !r.merged_security().is_empty() {
-                            protected_routes.push(ProtectedRoute {
-                                method: r.route_info.method.to_string(),
-                                path_pattern: r.full_axum_path(),
-                            });
-                        }
-                    }
-                } else {
-                    // Collect from inventory
-                    for route in inventory::iter::<&RouteInfo> {
-                        if !route.security.is_empty() {
-                            protected_routes.push(ProtectedRoute {
-                                method: route.method.to_string(),
-                                path_pattern: route.axum_path.to_string(),
-                            });
-                        }
-                    }
-                }
-
-                let protected = Arc::new(protected_routes);
-
                 app = app.layer(axum::middleware::from_fn(
                     move |req: axum::http::Request<axum::body::Body>, next| {
                         let path = req.uri().path().to_string();
@@ -3274,13 +4586,20 @@ impl UltraApiApp {
                         let auth_layer = auth_layer.clone();
 
                         async move {
-                            let is_protected = protected.iter().any(|route| {
+                            let matched_route = protected.iter().find(|route| {
                                 route_method_matches(&route.method, &method)
                                     && path_matches_pattern(&route.path_pattern, &path)
                             });
 
-                            if is_protected {
-                                auth_layer.run(req, next).await
+                            if let Some(route) = matched_route {
+                                auth_layer
+                                    .run(
+                                        req,
+                                        next,
+                                        Some(&route.allowed_security_schemes),
+                                        Some(&route.required_scopes_by_scheme),
+                                    )
+                                    .await
                             } else {
                                 next.run(req).await
                             }
@@ -3288,6 +4607,11 @@ impl UltraApiApp {
                     },
                 ));
             }
+        }
+
+        // Apply dependency-aware custom middleware layers.
+        for apply_layer in &self.middleware.dep_middleware_layers {
+            app = apply_layer(app, state.clone());
         }
 
         // Add mounted sub-applications
@@ -3307,15 +4631,17 @@ impl UltraApiApp {
 
             // Generate sub-app's OpenAPI spec and swagger HTML
             let sub_spec = sub_app.generate_openapi_spec();
-            let sub_swagger = sub_app.generate_swagger_html();
+            let sub_openapi_url = ResolvedRoute::join_paths(&path, &sub_app.openapi_url);
+            let sub_docs_url = ResolvedRoute::join_paths(&path, &sub_app.docs_url);
+            let sub_redoc_url = ResolvedRoute::join_paths(&path, &sub_app.redoc_url);
+            let sub_swagger = sub_app.generate_swagger_html(&sub_openapi_url);
             let sub_spec_json =
                 serde_json::to_string_pretty(&sub_spec.to_json_with_query_params(&sub_app.routers))
                     .unwrap_or_else(|_| "{}".to_string());
 
-            let _sub_path_prefix = path.to_string();
             let sub_spec_json_clone = sub_spec_json.clone();
             app = app.route(
-                &format!("{}/openapi.json", path),
+                &sub_openapi_url,
                 axum::routing::get(move || {
                     let spec = sub_spec_json_clone.clone();
                     async move { (StatusCode::OK, [("content-type", "application/json")], spec) }
@@ -3324,7 +4650,7 @@ impl UltraApiApp {
 
             let sub_swagger_clone = sub_swagger.clone();
             app = app.route(
-                &format!("{}/docs", path),
+                &sub_docs_url,
                 axum::routing::get(move || {
                     let html = sub_swagger_clone.clone();
                     async move { (StatusCode::OK, [("content-type", "text/html")], html) }
@@ -3332,10 +4658,10 @@ impl UltraApiApp {
             );
 
             // Add sub-app's ReDoc endpoint
-            let sub_redoc = sub_app.generate_redoc_html(&format!("{}/openapi.json", path));
+            let sub_redoc = sub_app.generate_redoc_html(&sub_openapi_url);
             let sub_redoc_clone = sub_redoc.clone();
             app = app.route(
-                &format!("{}/redoc", path),
+                &sub_redoc_url,
                 axum::routing::get(move || {
                     let html = sub_redoc_clone.clone();
                     async move { (StatusCode::OK, [("content-type", "text/html")], html) }
@@ -3440,6 +4766,8 @@ impl UltraApiApp {
     }
 
     pub async fn serve(self, addr: &str) {
+        let docs_url = self.docs_url.clone();
+
         // Build router + lifespan runner so that state and hooks are consistent
         // across serve/TestClient/embedded usage.
         let (app, runner) = self.into_router_with_lifespan();
@@ -3451,7 +4779,7 @@ impl UltraApiApp {
             .await
             .expect("Failed to bind to address");
         println!("🚀 Server running at http://{}", addr);
-        println!("📖 Swagger UI available at http://{}/docs", addr);
+        println!("📖 Swagger UI available at http://{}{}", addr, docs_url);
 
         // Serve with graceful shutdown
         let runner_for_shutdown = runner.clone();
@@ -3466,10 +4794,342 @@ impl UltraApiApp {
             .expect("Server error");
     }
 
+    fn schema_has_io_markers(schema: &openapi::Schema) -> bool {
+        schema
+            .properties
+            .values()
+            .any(|prop| prop.read_only || prop.write_only)
+    }
+
+    fn schema_name_from_ref_path(ref_path: &str) -> Option<&str> {
+        ref_path.strip_prefix("#/components/schemas/")
+    }
+
+    fn property_references_split_candidate(
+        prop: &openapi::Property,
+        split_candidates: &HashSet<String>,
+    ) -> bool {
+        if let Some(ref_path) = &prop.ref_path {
+            if let Some(schema_name) = Self::schema_name_from_ref_path(ref_path) {
+                if split_candidates.contains(schema_name) {
+                    return true;
+                }
+            }
+        }
+
+        if let Some(items) = &prop.items {
+            if Self::property_references_split_candidate(items, split_candidates) {
+                return true;
+            }
+        }
+
+        if let Some(additional) = &prop.additional_properties {
+            if Self::property_references_split_candidate(additional, split_candidates) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn schema_references_split_candidate(
+        schema: &openapi::Schema,
+        split_candidates: &HashSet<String>,
+    ) -> bool {
+        if schema
+            .properties
+            .values()
+            .any(|prop| Self::property_references_split_candidate(prop, split_candidates))
+        {
+            return true;
+        }
+
+        if let Some(one_of) = &schema.one_of {
+            let has_one_of_ref = one_of.iter().any(|ref_path| {
+                Self::schema_name_from_ref_path(ref_path)
+                    .map(|name| split_candidates.contains(name))
+                    .unwrap_or(false)
+            });
+            if has_one_of_ref {
+                return true;
+            }
+        }
+
+        if let Some(discriminator) = &schema.discriminator {
+            let has_discriminator_ref = discriminator.mapping.values().any(|ref_path| {
+                Self::schema_name_from_ref_path(ref_path)
+                    .map(|name| split_candidates.contains(name))
+                    .unwrap_or(false)
+            });
+            if has_discriminator_ref {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn split_schema_component_name(schema_name: &str, is_request: bool) -> String {
+        if is_request {
+            format!("{}-Input", schema_name)
+        } else {
+            format!("{}-Output", schema_name)
+        }
+    }
+
+    fn mapped_schema_name_for_direction(
+        schema_name: &str,
+        split_candidates: &HashSet<String>,
+        is_request: bool,
+    ) -> String {
+        if split_candidates.contains(schema_name) {
+            Self::split_schema_component_name(schema_name, is_request)
+        } else {
+            schema_name.to_string()
+        }
+    }
+
+    fn rewrite_property_refs_for_direction(
+        prop: &mut openapi::Property,
+        split_candidates: &HashSet<String>,
+        is_request: bool,
+    ) {
+        if let Some(ref_path) = &mut prop.ref_path {
+            let mapped_schema_name =
+                Self::schema_name_from_ref_path(ref_path).and_then(|schema_name| {
+                    if split_candidates.contains(schema_name) {
+                        Some(Self::split_schema_component_name(schema_name, is_request))
+                    } else {
+                        None
+                    }
+                });
+            if let Some(mapped_schema_name) = mapped_schema_name {
+                *ref_path = format!("#/components/schemas/{}", mapped_schema_name);
+            }
+        }
+
+        if let Some(items) = &mut prop.items {
+            Self::rewrite_property_refs_for_direction(items, split_candidates, is_request);
+        }
+
+        if let Some(additional) = &mut prop.additional_properties {
+            Self::rewrite_property_refs_for_direction(additional, split_candidates, is_request);
+        }
+    }
+
+    fn split_schema_for_direction(
+        schema: &openapi::Schema,
+        split_candidates: &HashSet<String>,
+        is_request: bool,
+    ) -> openapi::Schema {
+        let mut split_schema = schema.clone();
+
+        let mut filtered_properties: HashMap<String, openapi::Property> = HashMap::new();
+        for (name, prop) in &schema.properties {
+            if (is_request && prop.read_only) || (!is_request && prop.write_only) {
+                continue;
+            }
+
+            let mut prop_clone = prop.clone();
+            Self::rewrite_property_refs_for_direction(
+                &mut prop_clone,
+                split_candidates,
+                is_request,
+            );
+            filtered_properties.insert(name.clone(), prop_clone);
+        }
+
+        split_schema.required = schema
+            .required
+            .iter()
+            .filter(|field| filtered_properties.contains_key(field.as_str()))
+            .cloned()
+            .collect();
+        split_schema.properties = filtered_properties;
+
+        if let Some(one_of) = &mut split_schema.one_of {
+            for ref_path in one_of.iter_mut() {
+                let mapped_schema_name =
+                    Self::schema_name_from_ref_path(ref_path).and_then(|schema_name| {
+                        if split_candidates.contains(schema_name) {
+                            Some(Self::split_schema_component_name(schema_name, is_request))
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(mapped_schema_name) = mapped_schema_name {
+                    *ref_path = format!("#/components/schemas/{}", mapped_schema_name);
+                }
+            }
+        }
+
+        if let Some(discriminator) = &mut split_schema.discriminator {
+            for mapped_ref in discriminator.mapping.values_mut() {
+                let mapped_schema_name =
+                    Self::schema_name_from_ref_path(mapped_ref).and_then(|schema_name| {
+                        if split_candidates.contains(schema_name) {
+                            Some(Self::split_schema_component_name(schema_name, is_request))
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(mapped_schema_name) = mapped_schema_name {
+                    *mapped_ref = format!("#/components/schemas/{}", mapped_schema_name);
+                }
+            }
+        }
+
+        split_schema
+    }
+
+    fn parse_security_requirement(requirement: &str) -> (String, Vec<String>) {
+        let requirement = requirement.trim();
+        if requirement.is_empty() {
+            return (String::new(), vec![]);
+        }
+
+        let (scheme_raw, scopes_raw) = if let Some((scheme, scopes)) = requirement.split_once(':') {
+            (scheme.trim(), Some(scopes.trim()))
+        } else {
+            (requirement, None)
+        };
+
+        let scheme_name = match scheme_raw {
+            "bearer" => "bearerAuth".to_string(),
+            "basic" => "basicAuth".to_string(),
+            other => other.to_string(),
+        };
+
+        let scopes = scopes_raw
+            .map(|raw| {
+                raw.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        (scheme_name, scopes)
+    }
+
+    fn normalize_security_requirement(requirement: &mut HashMap<String, Vec<String>>) {
+        for scopes in requirement.values_mut() {
+            scopes.sort();
+            scopes.dedup();
+        }
+    }
+
+    fn security_requirement_signature(requirement: &HashMap<String, Vec<String>>) -> String {
+        let mut parts: Vec<String> = requirement
+            .iter()
+            .map(|(scheme, scopes)| {
+                let mut normalized_scopes = scopes.clone();
+                normalized_scopes.sort();
+                normalized_scopes.dedup();
+                format!("{}:{}", scheme, normalized_scopes.join(","))
+            })
+            .collect();
+        parts.sort();
+        parts.join("|")
+    }
+
+    fn dedupe_security_requirements(
+        requirements: Vec<HashMap<String, Vec<String>>>,
+    ) -> Vec<HashMap<String, Vec<String>>> {
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::new();
+
+        for mut requirement in requirements {
+            Self::normalize_security_requirement(&mut requirement);
+            let signature = Self::security_requirement_signature(&requirement);
+            if seen.insert(signature) {
+                deduped.push(requirement);
+            }
+        }
+
+        deduped
+    }
+
+    fn parse_security_expression(expression: &str) -> Vec<HashMap<String, Vec<String>>> {
+        let mut requirements = Vec::new();
+
+        for or_branch in expression.split("||") {
+            let mut requirement = HashMap::<String, Vec<String>>::new();
+
+            for and_term in or_branch.split("&&") {
+                let (scheme_name, scopes) = Self::parse_security_requirement(and_term);
+                if scheme_name.is_empty() {
+                    continue;
+                }
+
+                let entry = requirement.entry(scheme_name).or_default();
+                for scope in scopes {
+                    if !entry.contains(&scope) {
+                        entry.push(scope);
+                    }
+                }
+            }
+
+            if !requirement.is_empty() {
+                Self::normalize_security_requirement(&mut requirement);
+                requirements.push(requirement);
+            }
+        }
+
+        requirements
+    }
+
+    fn parse_security_requirements(requirements: &[&str]) -> Vec<HashMap<String, Vec<String>>> {
+        let mut parsed = Vec::new();
+
+        for requirement in requirements {
+            parsed.extend(Self::parse_security_expression(requirement));
+        }
+
+        Self::dedupe_security_requirements(parsed)
+    }
+
+    fn merge_security_requirements(
+        parent_requirements: &[&str],
+        route_requirements: &[&str],
+    ) -> Vec<HashMap<String, Vec<String>>> {
+        let parent_parsed = Self::parse_security_requirements(parent_requirements);
+        let route_parsed = Self::parse_security_requirements(route_requirements);
+
+        if parent_parsed.is_empty() {
+            return route_parsed;
+        }
+        if route_parsed.is_empty() {
+            return parent_parsed;
+        }
+
+        let mut merged = Vec::new();
+        for parent_requirement in &parent_parsed {
+            for route_requirement in &route_parsed {
+                let mut combined = parent_requirement.clone();
+                for (scheme, scopes) in route_requirement {
+                    let entry = combined.entry(scheme.clone()).or_default();
+                    for scope in scopes {
+                        if !entry.contains(scope) {
+                            entry.push(scope.clone());
+                        }
+                    }
+                }
+                Self::normalize_security_requirement(&mut combined);
+                merged.push(combined);
+            }
+        }
+
+        Self::dedupe_security_requirements(merged)
+    }
+
     fn build_operation(
         route: &RouteInfo,
         tags: Vec<String>,
-        security_list: &[&str],
+        security_requirements: &[HashMap<String, Vec<String>>],
+        extra_responses: &HashMap<String, openapi::ResponseDef>,
+        split_candidates: &HashSet<String>,
     ) -> openapi::Operation {
         let description = if route.description.is_empty() {
             None
@@ -3479,42 +5139,56 @@ impl UltraApiApp {
 
         let status_code = route.success_status.to_string();
 
-        let security: Vec<HashMap<String, Vec<String>>> = security_list
-            .iter()
-            .map(|s| {
-                let scheme_name = match *s {
-                    "bearer" => "bearerAuth",
-                    other => other,
-                };
-                let mut map = HashMap::new();
-                map.insert(scheme_name.to_string(), vec![]);
-                map
-            })
-            .collect();
+        let security = security_requirements.to_vec();
 
         let schema_ref_value = if route.success_status == 204 {
             None
         } else if route.is_vec_response {
+            let response_item_schema_name = Self::mapped_schema_name_for_direction(
+                route.vec_inner_type_name,
+                split_candidates,
+                false,
+            );
             Some(serde_json::json!({
                 "type": "array",
-                "items": { "$ref": format!("#/components/schemas/{}", route.vec_inner_type_name) }
+                "items": { "$ref": format!("#/components/schemas/{}", response_item_schema_name) }
             }))
         } else {
-            Some(
-                serde_json::json!({ "$ref": format!("#/components/schemas/{}", route.response_type_name) }),
-            )
+            let response_schema_name = Self::mapped_schema_name_for_direction(
+                route.response_type_name,
+                split_candidates,
+                false,
+            );
+            Some(serde_json::json!({
+                "$ref": format!("#/components/schemas/{}", response_schema_name)
+            }))
         };
 
+        let is_redirect_response = route.response_class == ResponseClass::Redirect;
+
         // Get content type (response_model override takes precedence)
-        let response_content_type = route
-            .response_model_options
-            .content_type
-            .unwrap_or(route.response_class.content_type());
+        // Redirect responses are header-centric and usually have no body in practice.
+        let response_content_type = if is_redirect_response {
+            None
+        } else {
+            Some(
+                route
+                    .response_model_options
+                    .content_type
+                    .unwrap_or(route.response_class.content_type())
+                    .to_string(),
+            )
+        };
 
         let request_schema_ref = if route.request_body_content_type == "multipart/form-data" {
             Some("#/components/schemas/Multipart".to_string())
         } else if route.has_body {
-            Some(format!("#/components/schemas/{}", route.body_type_name))
+            let request_schema_name = Self::mapped_schema_name_for_direction(
+                route.body_type_name,
+                split_candidates,
+                true,
+            );
+            Some(format!("#/components/schemas/{}", request_schema_name))
         } else {
             None
         };
@@ -3524,6 +5198,20 @@ impl UltraApiApp {
             schema_ref_value
         } else {
             None // Non-JSON responses don't have JSON schema refs
+        };
+
+        let response_headers = if is_redirect_response {
+            let mut headers = HashMap::new();
+            headers.insert(
+                "Location".to_string(),
+                openapi::HeaderDef {
+                    description: Some("Redirect target URL".to_string()),
+                    schema: openapi::SchemaObject::new_type("string"),
+                },
+            );
+            headers
+        } else {
+            HashMap::new()
         };
 
         let success_desc = openapi::status_description(route.success_status).to_string();
@@ -3559,7 +5247,8 @@ impl UltraApiApp {
                     openapi::ResponseDef {
                         description: success_desc,
                         schema_ref: response_schema_ref,
-                        content_type: Some(response_content_type.to_string()),
+                        content_type: response_content_type,
+                        headers: response_headers,
                     },
                 );
                 // Error responses are always JSON
@@ -3571,6 +5260,7 @@ impl UltraApiApp {
                             serde_json::json!({ "$ref": "#/components/schemas/ApiError" }),
                         ),
                         content_type: Some("application/json".to_string()),
+                        headers: HashMap::new(),
                     },
                 );
                 if route.is_result_return {
@@ -3582,18 +5272,20 @@ impl UltraApiApp {
                                 serde_json::json!({ "$ref": "#/components/schemas/ApiError" }),
                             ),
                             content_type: None,
+                            headers: HashMap::new(),
                         },
                     );
                 }
-                if route.has_body {
+                if route.has_body || route.has_query_params {
                     map.insert(
                         "422".to_string(),
                         openapi::ResponseDef {
                             description: "Validation Failed".to_string(),
                             schema_ref: Some(
-                                serde_json::json!({ "$ref": "#/components/schemas/ApiError" }),
+                                serde_json::json!({ "$ref": "#/components/schemas/HTTPValidationError" }),
                             ),
                             content_type: None,
+                            headers: HashMap::new(),
                         },
                     );
                 }
@@ -3605,8 +5297,12 @@ impl UltraApiApp {
                             serde_json::json!({ "$ref": "#/components/schemas/ApiError" }),
                         ),
                         content_type: None,
+                        headers: HashMap::new(),
                     },
                 );
+                for (code, response) in extra_responses {
+                    map.insert(code.clone(), response.clone());
+                }
                 map
             },
             security,
@@ -3616,7 +5312,7 @@ impl UltraApiApp {
         }
     }
 
-    fn generate_swagger_html(&self) -> String {
+    fn generate_swagger_html(&self, openapi_url: &str) -> String {
         match &self.swagger_mode {
             SwaggerMode::Cdn(cdn_base) => {
                 format!(
@@ -3631,7 +5327,7 @@ impl UltraApiApp {
     <script src="{cdn}/swagger-ui-bundle.js"> </script>
     <script>
     SwaggerUIBundle({{
-        url: "/openapi.json",
+        url: "{openapi_url}",
         dom_id: '#swagger-ui',
         presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
         layout: "BaseLayout"
@@ -3641,6 +5337,7 @@ impl UltraApiApp {
 </html>"#,
                     title = self.title,
                     cdn = cdn_base,
+                    openapi_url = openapi_url,
                 )
             }
             SwaggerMode::Embedded => {
@@ -3654,13 +5351,14 @@ impl UltraApiApp {
     <style>{css}</style>
 </head>
 <body>
-    <script id="api-reference" data-url="/openapi.json"></script>
+    <script id="api-reference" data-url="{openapi_url}"></script>
     <script>{js}</script>
 </body>
 </html>"#,
                     title = self.title,
                     css = include_str!("../assets/scalar.min.css"),
                     js = include_str!("../assets/scalar.min.js"),
+                    openapi_url = openapi_url,
                 )
             }
         }
@@ -3689,6 +5387,14 @@ impl UltraApiApp {
 
         // Add shared schemas
         schemas.insert("ApiError".to_string(), openapi::api_error_schema());
+        schemas.insert(
+            "ValidationError".to_string(),
+            openapi::validation_error_schema(),
+        );
+        schemas.insert(
+            "HTTPValidationError".to_string(),
+            openapi::http_validation_error_schema(),
+        );
 
         for info in inventory::iter::<SchemaInfo> {
             schemas.insert(info.name.to_string(), (info.schema_fn)());
@@ -3715,6 +5421,54 @@ impl UltraApiApp {
             );
         }
 
+        // FastAPI-style request/response schema separation:
+        // When a model has readOnly/writeOnly fields (or references another split model),
+        // generate "-Input" and "-Output" component schemas and wire operations to them.
+        let base_schemas = schemas.clone();
+        let mut split_candidates: HashSet<String> = base_schemas
+            .iter()
+            .filter_map(|(name, schema)| {
+                if Self::schema_has_io_markers(schema) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        loop {
+            let mut changed = false;
+            for (name, schema) in &base_schemas {
+                if split_candidates.contains(name) {
+                    continue;
+                }
+
+                if Self::schema_references_split_candidate(schema, &split_candidates) {
+                    split_candidates.insert(name.clone());
+                    changed = true;
+                }
+            }
+
+            if !changed {
+                break;
+            }
+        }
+
+        for schema_name in &split_candidates {
+            if let Some(schema) = base_schemas.get(schema_name) {
+                let input_name = Self::split_schema_component_name(schema_name, true);
+                let output_name = Self::split_schema_component_name(schema_name, false);
+
+                let input_schema =
+                    Self::split_schema_for_direction(schema, &split_candidates, true);
+                let output_schema =
+                    Self::split_schema_for_direction(schema, &split_candidates, false);
+
+                schemas.insert(input_name, input_schema);
+                schemas.insert(output_name, output_schema);
+            }
+        }
+
         let mut paths = HashMap::new();
         // When explicit routers are used, `paths` keys are the resolved full path (prefix applied).
         // We keep a mapping so we can attach callbacks to the correct operation.
@@ -3723,21 +5477,39 @@ impl UltraApiApp {
         if self.has_explicit_routes() {
             let resolved = self.resolve_routes();
             for r in &resolved {
+                if !r.include_in_schema {
+                    continue;
+                }
+
                 let route = r.route_info;
+                // WebSocket upgrades are intentionally excluded from OpenAPI paths,
+                // matching FastAPI's behavior.
+                if route.is_websocket {
+                    continue;
+                }
+
                 let full_path = r.full_path();
                 explicit_route_paths.insert(route as *const RouteInfo, full_path.clone());
 
                 let tags = r.merged_tags();
                 let sec = r.merged_security();
-                let operation = Self::build_operation(route, tags, &sec);
+                let operation =
+                    Self::build_operation(route, tags, &sec, &r.extra_responses, &split_candidates);
                 let path_item = paths.entry(full_path).or_insert_with(HashMap::new);
                 path_item.insert(route.method.to_lowercase(), operation);
             }
         } else {
             for route in inventory::iter::<&RouteInfo> {
+                // WebSocket upgrades are intentionally excluded from OpenAPI paths,
+                // matching FastAPI's behavior.
+                if route.is_websocket {
+                    continue;
+                }
+
                 let tags: Vec<String> = route.tags.iter().map(|s| s.to_string()).collect();
-                let sec: Vec<&str> = route.security.to_vec();
-                let operation = Self::build_operation(route, tags, &sec);
+                let sec = Self::parse_security_requirements(route.security);
+                let operation =
+                    Self::build_operation(route, tags, &sec, &HashMap::new(), &split_candidates);
                 let path_item = paths
                     .entry(route.path.to_string())
                     .or_insert_with(HashMap::new);
@@ -3764,9 +5536,14 @@ impl UltraApiApp {
                     // Build the callback operation
                     let callback_tags: Vec<String> =
                         callback_route.tags.iter().map(|s| s.to_string()).collect();
-                    let callback_sec: Vec<&str> = callback_route.security.to_vec();
-                    let callback_operation =
-                        Self::build_operation(callback_route, callback_tags, &callback_sec);
+                    let callback_sec = Self::parse_security_requirements(callback_route.security);
+                    let callback_operation = Self::build_operation(
+                        callback_route,
+                        callback_tags,
+                        &callback_sec,
+                        &HashMap::new(),
+                        &split_candidates,
+                    );
 
                     // Create the callback PathItem
                     let mut callback_path_item = openapi::PathItem::new();
@@ -3803,9 +5580,14 @@ impl UltraApiApp {
                     // Build the callback operation
                     let callback_tags: Vec<String> =
                         callback_route.tags.iter().map(|s| s.to_string()).collect();
-                    let callback_sec: Vec<&str> = callback_route.security.to_vec();
-                    let callback_operation =
-                        Self::build_operation(callback_route, callback_tags, &callback_sec);
+                    let callback_sec = Self::parse_security_requirements(callback_route.security);
+                    let callback_operation = Self::build_operation(
+                        callback_route,
+                        callback_tags,
+                        &callback_sec,
+                        &HashMap::new(),
+                        &split_candidates,
+                    );
 
                     // Create the callback PathItem
                     let mut callback_path_item = openapi::PathItem::new();
@@ -3857,9 +5639,18 @@ impl openapi::OpenApiSpec {
         let mut route_paths = Vec::new();
 
         if use_routers {
+            let root_responses: HashMap<String, openapi::ResponseDef> = HashMap::new();
             for router in routers {
-                let resolved = router.resolve("", &[], &[]);
+                let resolved = router.resolve_with_options("", &[], &[], &root_responses, true);
                 for r in &resolved {
+                    if !r.include_in_schema {
+                        continue;
+                    }
+
+                    if r.route_info.is_websocket {
+                        continue;
+                    }
+
                     if let Some(qfn) = r.route_info.query_params_fn {
                         route_paths.push(RoutePathInfo {
                             spec_path: r.full_path(),
@@ -3871,6 +5662,10 @@ impl openapi::OpenApiSpec {
             }
         } else {
             for route in inventory::iter::<&RouteInfo> {
+                if route.is_websocket {
+                    continue;
+                }
+
                 if let Some(qfn) = route.query_params_fn {
                     route_paths.push(RoutePathInfo {
                         spec_path: route.path.to_string(),

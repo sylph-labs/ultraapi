@@ -29,6 +29,7 @@ fn test_extension_on_schema() {
             additional_properties: None,
             read_only: false,
             write_only: false,
+            deprecated: false,
         },
     );
 
@@ -126,6 +127,10 @@ fn test_path_parameter_with_style() {
         required: true,
         schema: SchemaObject::new_type("string"),
         description: Some("The user ID"),
+        style: None,
+        explode: None,
+        example: None,
+        examples: None,
     };
     let json = serde_json::to_value(&param).unwrap();
     assert_eq!(json["name"], "id");
@@ -156,6 +161,7 @@ fn test_response_definition() {
         description: "A user".to_string(),
         schema_ref: None,
         content_type: None,
+        headers: HashMap::new(),
     };
     let json = serde_json::to_value(&response).unwrap();
     assert_eq!(json["description"], "A user");
@@ -301,6 +307,7 @@ fn test_callback_not_implemented() {
             description: "Callback accepted".to_string(),
             schema_ref: None,
             content_type: None,
+            headers: HashMap::new(),
         },
     );
 
@@ -337,6 +344,7 @@ fn test_callback_not_implemented() {
             description: "Created".to_string(),
             schema_ref: None,
             content_type: None,
+            headers: HashMap::new(),
         },
     );
 
@@ -375,6 +383,7 @@ fn test_webhook_not_implemented() {
             description: "Webhook queued".to_string(),
             schema_ref: None,
             content_type: None,
+            headers: HashMap::new(),
         },
     );
 
@@ -451,7 +460,8 @@ fn test_api_key_security_on_route() {
     assert_eq!(resolved.len(), 1);
     // Security should be merged from route
     let merged = resolved[0].merged_security();
-    assert!(merged.contains(&"api_key"));
+    assert_eq!(merged.len(), 1);
+    assert_eq!(merged[0].get("api_key"), Some(&Vec::<String>::new()));
 }
 
 // ---- Test 15: Multiple Auth Schemes ----
@@ -481,8 +491,9 @@ fn test_multiple_security_schemes() {
 
     let resolved = app.resolve_routes();
     let merged = resolved[0].merged_security();
-    assert!(merged.contains(&"bearer"));
-    assert!(merged.contains(&"api_key"));
+    assert_eq!(merged.len(), 2);
+    assert!(merged.iter().any(|req| req.contains_key("bearerAuth")));
+    assert!(merged.iter().any(|req| req.contains_key("api_key")));
 }
 
 // ---- Test 16: Custom Header Parameters (Capability Gap) ----
@@ -633,12 +644,14 @@ fn test_min_items_constraint() {
             additional_properties: None,
             read_only: false,
             write_only: false,
+            deprecated: false,
         })),
         nullable: false,
         example: None,
         additional_properties: None,
         read_only: false,
         write_only: false,
+        deprecated: false,
     };
 
     let json = prop.to_json_value();
@@ -665,6 +678,7 @@ fn test_pattern_constraint() {
         additional_properties: None,
         read_only: false,
         write_only: false,
+        deprecated: false,
     };
 
     let json = prop.to_json_value();
@@ -692,6 +706,7 @@ fn test_read_only_property() {
         additional_properties: None,
         read_only: true,
         write_only: false,
+        deprecated: false,
     };
 
     let json = prop.to_json_value();
@@ -718,6 +733,7 @@ fn test_write_only_property() {
         additional_properties: None,
         read_only: false,
         write_only: true,
+        deprecated: false,
     };
 
     let json = prop.to_json_value();
@@ -744,6 +760,7 @@ fn test_read_and_write_only_false_by_default() {
         additional_properties: None,
         read_only: false,
         write_only: false,
+        deprecated: false,
     };
 
     let json = prop.to_json_value();

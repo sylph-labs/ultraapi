@@ -1,0 +1,5 @@
+error: unsupported response_model option (expected include/exclude/by_alias/exclude_none/exclude_unset/exclude_defaults/content_type)
+ --> tests/ui/response_model_parser_invalid_unknown_option.rs:4:18
+  |
+4 | #[response_model(unknown_option = true)]
+  |                  ^^^^^^^^^^^^^^

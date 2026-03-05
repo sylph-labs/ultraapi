@@ -591,10 +591,59 @@ impl AuthLayer {
         self
     }
 
+    fn normalize_security_scheme_name(name: &str) -> String {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "bearer" | "bearerauth" => "bearerauth".to_string(),
+            "basic" | "basicauth" => "basicauth".to_string(),
+            "apikey" | "apikeyauth" => "apikeyauth".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    fn allows_scheme_name(allowed_security_schemes: Option<&[String]>, candidate: &str) -> bool {
+        let Some(allowed) = allowed_security_schemes else {
+            return true;
+        };
+
+        let normalized_candidate = Self::normalize_security_scheme_name(candidate);
+        allowed
+            .iter()
+            .any(|scheme| Self::normalize_security_scheme_name(scheme) == normalized_candidate)
+    }
+
+    fn credential_allowed(
+        creds: &Credentials,
+        allowed_security_schemes: Option<&[String]>,
+    ) -> bool {
+        let Some(allowed) = allowed_security_schemes else {
+            return true;
+        };
+
+        if allowed.is_empty() {
+            return false;
+        }
+
+        if let Some(security_scheme) = &creds.security_scheme {
+            if Self::allows_scheme_name(Some(allowed), security_scheme) {
+                return true;
+            }
+        }
+
+        Self::allows_scheme_name(Some(allowed), &creds.scheme)
+    }
+
     /// Extract credentials from the request based on security scheme configs
-    fn extract_credentials(&self, request: &Request<Body>) -> Option<Credentials> {
+    fn extract_credentials(
+        &self,
+        request: &Request<Body>,
+        allowed_security_schemes: Option<&[String]>,
+    ) -> Option<Credentials> {
         // First try configured security schemes
         for scheme in &self.security_schemes {
+            if !Self::allows_scheme_name(allowed_security_schemes, &scheme.name) {
+                continue;
+            }
+
             let credentials = match scheme.location {
                 CredentialLocation::Header => {
                     let header_name = scheme.param_name.to_lowercase();
@@ -688,37 +737,77 @@ impl AuthLayer {
             .get("authorization")
             .and_then(|v| v.to_str().ok())
         {
-            if let Some((scheme, value)) = auth_header.split_once(' ') {
+            let fallback_credentials = if let Some((scheme, value)) = auth_header.split_once(' ') {
                 let scheme_lower = scheme.to_lowercase();
                 // Basic認証の場合は資格情報をデコード
                 if scheme_lower == "basic" {
                     if let Some(basic) = decode_basic_header(value) {
-                        return Some(Credentials::from_basic(basic, "fallback"));
+                        Some(Credentials::from_basic(basic, "fallback"))
+                    } else {
+                        Some(Credentials::new(scheme, value))
                     }
+                } else {
+                    Some(Credentials::new(scheme, value))
                 }
-                return Some(Credentials::new(scheme, value));
             } else {
                 // Just the value without scheme
-                return Some(Credentials::new("bearer", auth_header));
+                Some(Credentials::new("bearer", auth_header))
+            };
+
+            if let Some(creds) = fallback_credentials {
+                if Self::credential_allowed(&creds, allowed_security_schemes) {
+                    return Some(creds);
+                }
             }
         }
 
         None
     }
 
+    fn route_required_scopes(
+        route_required_scopes_by_scheme: Option<&HashMap<String, Vec<String>>>,
+        security_scheme: &str,
+    ) -> Option<Vec<String>> {
+        let route_required_scopes_by_scheme = route_required_scopes_by_scheme?;
+        let target = Self::normalize_security_scheme_name(security_scheme);
+
+        route_required_scopes_by_scheme
+            .iter()
+            .find_map(|(scheme, scopes)| {
+                (Self::normalize_security_scheme_name(scheme) == target).then(|| scopes.clone())
+            })
+    }
+
     /// Get required scopes for a security scheme
-    fn get_required_scopes(&self, security_scheme: &str) -> Vec<String> {
+    fn get_required_scopes(
+        &self,
+        security_scheme: &str,
+        route_required_scopes_by_scheme: Option<&HashMap<String, Vec<String>>>,
+    ) -> Vec<String> {
+        if let Some(route_scopes) =
+            Self::route_required_scopes(route_required_scopes_by_scheme, security_scheme)
+        {
+            return route_scopes;
+        }
+
+        let target = Self::normalize_security_scheme_name(security_scheme);
         for scheme in &self.security_schemes {
-            if scheme.name == security_scheme {
+            if Self::normalize_security_scheme_name(&scheme.name) == target {
                 return scheme.scopes.clone();
             }
         }
         vec![]
     }
 
-    pub(crate) async fn run(&self, request: Request<Body>, next: Next) -> Response {
+    pub(crate) async fn run(
+        &self,
+        request: Request<Body>,
+        next: Next,
+        allowed_security_schemes: Option<&[String]>,
+        route_required_scopes_by_scheme: Option<&HashMap<String, Vec<String>>>,
+    ) -> Response {
         // Extract credentials from request
-        let credentials = self.extract_credentials(&request);
+        let credentials = self.extract_credentials(&request, allowed_security_schemes);
 
         // Determine the realm for WWW-Authenticate header
         // Based on the configured security schemes
@@ -726,12 +815,15 @@ impl AuthLayer {
 
         match credentials {
             Some(creds) => {
-                // Get required scopes for the security scheme
-                let required_scopes = creds
+                // Get required scopes for the matched security scheme.
+                // Route-level scope requirements (#[security("scheme:scope")])
+                // take precedence over app-level scheme defaults.
+                let scope_lookup_scheme = creds
                     .security_scheme
-                    .as_ref()
-                    .map(|ss| self.get_required_scopes(ss))
-                    .unwrap_or_default();
+                    .as_deref()
+                    .unwrap_or(creds.scheme.as_str());
+                let required_scopes =
+                    self.get_required_scopes(scope_lookup_scheme, route_required_scopes_by_scheme);
 
                 // First validate credentials
                 match self.validator.validate(&creds) {
@@ -1107,16 +1199,31 @@ impl GZipConfig {
     }
 }
 
+pub type DepMiddlewareLayer = Arc<
+    dyn Fn(axum::Router<crate::AppState>, crate::AppState) -> axum::Router<crate::AppState>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AuthDefaultPolicy {
+    #[default]
+    SecureByDefault,
+    ExplicitOnly,
+}
+
 /// Middleware builder for UltraAPI applications
 pub struct MiddlewareBuilder {
     pub auth_enabled: bool,
     pub auth_layer: Option<AuthLayer>,
+    pub auth_default_policy: AuthDefaultPolicy,
     pub cors_config: Option<CorsConfig>,
     pub compression_config: Option<CompressionConfig>,
     pub gzip_config: Option<GZipConfig>,
     pub rate_limit_config: Option<RateLimitConfig>,
     pub response_cache_config: Option<ResponseCacheConfig>,
     pub session_config: Option<SessionConfig>,
+    pub dep_middleware_layers: Vec<DepMiddlewareLayer>,
 }
 
 impl Default for MiddlewareBuilder {
@@ -1131,12 +1238,14 @@ impl MiddlewareBuilder {
         Self {
             auth_enabled: false,
             auth_layer: None,
+            auth_default_policy: AuthDefaultPolicy::SecureByDefault,
             cors_config: None,
             compression_config: None,
             gzip_config: None,
             rate_limit_config: None,
             response_cache_config: None,
             session_config: None,
+            dep_middleware_layers: Vec::new(),
         }
     }
 
@@ -1166,6 +1275,24 @@ impl MiddlewareBuilder {
     pub fn enable_auth_with_api_keys(mut self, keys: Vec<String>) -> Self {
         self.auth_enabled = true;
         self.auth_layer = Some(AuthLayer::with_api_keys(keys));
+        self
+    }
+
+    /// Set default auth enforcement policy when security schemes are declared.
+    pub fn auth_default_policy(mut self, policy: AuthDefaultPolicy) -> Self {
+        self.auth_default_policy = policy;
+        self
+    }
+
+    /// Register dependency-aware middleware layer applied after auth middleware.
+    pub fn dep_middleware<F>(mut self, layer: F) -> Self
+    where
+        F: Fn(axum::Router<crate::AppState>, crate::AppState) -> axum::Router<crate::AppState>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.dep_middleware_layers.push(Arc::new(layer));
         self
     }
 

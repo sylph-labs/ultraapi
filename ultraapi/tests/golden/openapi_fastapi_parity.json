@@ -21,6 +21,25 @@
         ],
         "type": "object"
       },
+      "AuthContextResponse": {
+        "properties": {
+          "internal_note": {
+            "type": "string"
+          },
+          "session_present": {
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "internal_note",
+          "session_present",
+          "user_id"
+        ],
+        "type": "object"
+      },
       "CreateItem": {
         "properties": {
           "code": {
@@ -44,6 +63,22 @@
         ],
         "type": "object"
       },
+      "HTTPValidationError": {
+        "description": "Validation error response",
+        "properties": {
+          "detail": {
+            "description": "Validation errors",
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "type": "object"
+      },
       "Item": {
         "properties": {
           "id": {
@@ -60,6 +95,37 @@
           "id",
           "name",
           "price"
+        ],
+        "type": "object"
+      },
+      "OptionalProfile": {
+        "properties": {
+          "bio": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
         ],
         "type": "object"
       },
@@ -86,6 +152,32 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "ValidationError": {
+        "description": "Validation error item",
+        "properties": {
+          "loc": {
+            "description": "Error location",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "msg": {
+            "description": "Error message",
+            "type": "string"
+          },
+          "type": {
+            "description": "Error type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
         "type": "object"
       }
     }
@@ -138,6 +230,16 @@
               }
             },
             "description": "Bad Request"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Failed"
           },
           "500": {
             "content": {
@@ -193,7 +295,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             },
@@ -222,12 +324,14 @@
         "operationId": "delete_item",
         "parameters": [
           {
+            "explode": false,
             "in": "path",
             "name": "id",
             "required": true,
             "schema": {
               "type": "integer"
-            }
+            },
+            "style": "simple"
           }
         ],
         "responses": {
@@ -280,12 +384,14 @@
         "operationId": "get_item",
         "parameters": [
           {
+            "explode": false,
             "in": "path",
             "name": "id",
             "required": true,
             "schema": {
               "type": "integer"
-            }
+            },
+            "style": "simple"
           }
         ],
         "responses": {
@@ -340,12 +446,14 @@
         "operationId": "update_item",
         "parameters": [
           {
+            "explode": false,
             "in": "path",
             "name": "id",
             "required": true,
             "schema": {
               "type": "integer"
-            }
+            },
+            "style": "simple"
           }
         ],
         "requestBody": {
@@ -383,7 +491,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiError"
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             },
@@ -403,6 +511,160 @@
         "summary": "update item",
         "tags": [
           "items"
+        ]
+      }
+    },
+    "/parity/auth-context": {
+      "get": {
+        "description": "Header/Cookie extractor + response_model exclude parity case",
+        "operationId": "parity_auth_context",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "cookies",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthContextResponse"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "parity auth context",
+        "tags": [
+          "parity"
+        ]
+      }
+    },
+    "/parity/response-model/exclude-none": {
+      "get": {
+        "description": "response_model exclude_none parity case",
+        "operationId": "parity_response_model_exclude_none",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OptionalProfile"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "parity response model exclude none",
+        "tags": [
+          "parity"
+        ]
+      }
+    },
+    "/parity/security/and-or": {
+      "get": {
+        "operationId": "parity_security_and_or",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/String"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Bad Request"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "security": [
+          {
+            "apiKeyAuth": [],
+            "bearerAuth": []
+          },
+          {
+            "oauth2AuthCode": [
+              "read"
+            ]
+          }
+        ],
+        "summary": "parity security and or",
+        "tags": [
+          "parity"
         ]
       }
     }

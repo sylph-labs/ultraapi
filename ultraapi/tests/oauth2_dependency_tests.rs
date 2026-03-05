@@ -36,10 +36,7 @@ async fn test_oauth2_password_bearer_valid_token() {
     // With valid Bearer token
     let resp = client
         .get(format!("http://{}/oauth2-password-protected", addr))
-        .header(
-            "Authorization",
-            "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test",
-        )
+        .header("Authorization", "Bearer valid-password-token")
         .send()
         .await
         .unwrap();
@@ -170,14 +167,12 @@ async fn test_optional_oauth2_password_bearer_missing_header() {
         ultraapi::axum::serve(listener, app).await.unwrap();
     });
 
-    // Without Authorization header - should return 200 with "No token"
+    // Route-level security is enforced, so missing credentials are rejected before extractor fallback
     let resp = reqwest::get(format!("http://{}/optional-oauth2-protected", addr))
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    assert!(body.contains("No token provided"));
+    assert_eq!(resp.status(), 401);
 }
 
 #[tokio::test]
@@ -200,7 +195,7 @@ async fn test_optional_oauth2_password_bearer_invalid_format() {
 
     let client = reqwest::Client::new();
 
-    // With invalid format (Basic instead of Bearer) - should return 200 with None
+    // Route-level security is enforced; invalid auth scheme is rejected
     let resp = client
         .get(format!("http://{}/optional-oauth2-protected", addr))
         .header("Authorization", "Basic dXNlcjpwYXNz")
@@ -208,9 +203,7 @@ async fn test_optional_oauth2_password_bearer_invalid_format() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    assert!(body.contains("No token provided"));
+    assert_eq!(resp.status(), 401);
 }
 
 // ============================================================================
@@ -247,7 +240,7 @@ async fn test_oauth2_auth_code_bearer_valid_token() {
     // With valid Bearer token
     let resp = client
         .get(format!("http://{}/oauth2-auth-code-protected", addr))
-        .header("Authorization", "Bearer auth-code-token-456")
+        .header("Authorization", "Bearer valid-auth-code-token")
         .send()
         .await
         .unwrap();
@@ -318,7 +311,7 @@ async fn test_optional_oauth2_auth_code_bearer_missing_header() {
         ultraapi::axum::serve(listener, app).await.unwrap();
     });
 
-    // Without Authorization header - should return 200
+    // Route-level security is enforced, so missing credentials are rejected
     let resp = reqwest::get(format!(
         "http://{}/optional-oauth2-auth-code-protected",
         addr
@@ -326,9 +319,7 @@ async fn test_optional_oauth2_auth_code_bearer_missing_header() {
     .await
     .unwrap();
 
-    assert_eq!(resp.status(), 200);
-    let body = resp.text().await.unwrap();
-    assert!(body.contains("No auth code token provided"));
+    assert_eq!(resp.status(), 401);
 }
 
 // ============================================================================

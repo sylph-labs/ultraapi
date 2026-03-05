@@ -314,6 +314,9 @@ cargo run --bin ultraapi -- dev ultraapi-example --port 3001
 - `#[security("oauth2Password")]`: OAuth2 Password Flow（OpenAPI に反映）
 - `#[security("oauth2AuthCode")]`: OAuth2 Authorization Code Flow（OpenAPI に反映）
 - `#[security("oauth2Implicit")]`: OAuth2 Implicit Flow（OpenAPI に反映）
+- `#[security("bearer&&apiKeyAuth")]`: AND 要件（OpenAPI Security Requirement Object 1件として出力）
+- `#[security("bearer||apiKeyAuth")]`: OR 代替（複数 `#[security(...)]` も OR）
+- `#[dependencies(Depends<MyDep>, ...)]`: ハンドラ引数に出さずにルート依存を毎リクエスト実行（FastAPI 互換）
 
 #### OAuth2 依存オブジェクト
 
